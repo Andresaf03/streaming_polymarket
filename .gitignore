@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data
+data/raw/
+data/processed/
+data/checkpoints/
+*.parquet
+*.csv
+*.json.gz
+
+# Spark
+spark-warehouse/
+derby.log
+metastore_db/
+*.crc
+
+# Kafka
+kafka-logs/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / env
+.env
+*.env
+config/secrets.yaml
+
+# Models
+models/
+*.pt
+*.pkl
+*.joblib

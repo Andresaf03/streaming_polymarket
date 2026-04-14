@@ -1,0 +1,18 @@
+# WebSocket & HTTP
+websockets>=12.0
+aiohttp>=3.9.0
+
+# Terminal UI
+rich>=13.7.0
+
+# Data
+pandas>=2.0.0
+numpy>=1.26.0
+
+# Spark + Kafka
+pyspark>=3.5.0
+kafka-python>=2.0.0
+
+# ML
+scikit-learn>=1.4.0
+lightgbm>=4.3.0
