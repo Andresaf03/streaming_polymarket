@@ -31,6 +31,23 @@ services:
       retries: 15
       start_period: 30s
 
+  kafka-init:
+    image: apache/kafka:3.9.0
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for t in polymarket.events binance.trades binance.book stats.windowed; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
+            --create --if-not-exists --topic "$$t" --partitions 3 --replication-factor 1
+        done
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
+          --create --if-not-exists --topic btc.forecast --partitions 1 --replication-factor 1
+
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka-ui

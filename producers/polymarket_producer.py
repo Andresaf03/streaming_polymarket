@@ -284,6 +284,8 @@ def main() -> None:
     )
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
+    if not args.asset and not args.query and not args.all:
+        args.asset = "btc"
 
     try:
         asyncio.run(run(args))
