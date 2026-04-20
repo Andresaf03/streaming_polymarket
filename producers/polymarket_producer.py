@@ -31,7 +31,7 @@ import websockets
 from rich.console import Console
 from rich.rule import Rule
 
-from common import KafkaSink, RateTracker, envelope, ssl_context
+from common import KafkaSink, RateTracker, envelope, log_progress, ssl_context
 from producers.polymarket_discovery import (
     build_asset_map,
     fetch_top_markets,
@@ -40,8 +40,27 @@ from producers.polymarket_discovery import (
 
 CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 TOPIC = "polymarket.events"
+WS_CONNECT_KWARGS: dict = {
+    "ping_interval": 10,
+    "ping_timeout": 15,
+    "max_size": 10 * 1024 * 1024,
+}
 
 console = Console()
+
+
+def _slug_window_end(slug: str, window_min: int) -> float:
+    """Unix seconds when the rolling-market window closes.
+
+    Slugs look like `btc-updown-5m-1776670200`; the trailing integer is the
+    window-start unix timestamp. Falls back to now + window_min minutes if
+    the slug can't be parsed.
+    """
+    try:
+        start_ts = int(slug.rsplit("-", 1)[-1])
+        return float(start_ts + window_min * 60)
+    except (ValueError, IndexError):
+        return time.time() + window_min * 60
 
 
 async def select_markets(args: argparse.Namespace) -> dict[str, dict]:
@@ -128,13 +147,6 @@ async def publish(
         tracker.record(label=env["type"])
 
 
-def log_progress(tracker: RateTracker) -> None:
-    console.print(
-        f"[dim]rate={tracker.rate()}/s  avg={tracker.avg_rate:.1f}/s  "
-        f"total={tracker.total}  counts={tracker.counts}[/dim]"
-    )
-
-
 async def stream(
     ws,
     asset_map: dict[str, dict],
@@ -145,34 +157,113 @@ async def stream(
     async for raw in ws:
         await publish(raw, asset_map, sink, tracker)
         if tracker.total and tracker.total % log_every == 0:
-            log_progress(tracker)
+            log_progress(console, tracker)
+
+
+async def _stream_subscription(
+    asset_map: dict[str, dict],
+    sink: KafkaSink,
+    tracker: RateTracker,
+    log_every: int,
+    deadline: float | None = None,
+) -> None:
+    """Open one WebSocket, subscribe to asset_map's keys, stream until deadline.
+
+    If `deadline` is None, streams until the WS closes (caller handles errors).
+    If set, wraps stream() in asyncio.wait_for so the coroutine exits cleanly
+    at the given unix timestamp — used by rolling-market rediscovery.
+    """
+    subscribe_msg = {"assets_ids": list(asset_map.keys()), "type": "market"}
+    async with websockets.connect(CLOB_WS, ssl=ssl_context(), **WS_CONNECT_KWARGS) as ws:
+        await ws.send(json.dumps(subscribe_msg))
+        console.print("[bold green]Streaming…[/bold green]")
+        if deadline is None:
+            await stream(ws, asset_map, sink, tracker, log_every)
+        else:
+            timeout = max(1.0, deadline - time.time())
+            try:
+                await asyncio.wait_for(
+                    stream(ws, asset_map, sink, tracker, log_every),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                pass
+
+
+async def _run_static(
+    args: argparse.Namespace,
+    sink: KafkaSink,
+    tracker: RateTracker,
+    log_every: int,
+) -> None:
+    """Single discovery + single long-lived WS. For --query / --all / default."""
+    asset_map = await select_markets(args)
+    if not asset_map:
+        return
+    console.print(f"\n[cyan]Subscribing to {len(asset_map)} tokens…[/cyan]")
+    await _stream_subscription(asset_map, sink, tracker, log_every)
+
+
+async def _run_rolling(
+    args: argparse.Namespace,
+    sink: KafkaSink,
+    tracker: RateTracker,
+    log_every: int,
+) -> None:
+    """Rolling-market mode: rediscover the active window each cycle.
+
+    For --asset btc --window 5 etc., the market slug rotates every N minutes.
+    We open a fresh WebSocket per window, stream until a few seconds past the
+    slug's window_end, then loop to rediscover the next window's asset_ids.
+    """
+    grace_seconds = 5.0
+    while True:
+        async with aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(ssl=ssl_context())
+        ) as session:
+            market, is_live = await fetch_updown_market(session, args.asset, args.window)
+
+        if not market:
+            console.print(
+                f"[yellow]No {args.asset}-updown-{args.window}m market found; "
+                f"retrying in 10s[/yellow]"
+            )
+            await asyncio.sleep(10)
+            continue
+
+        asset_map = build_asset_map([market])
+        slug = market.get("slug", "")
+        deadline = _slug_window_end(slug, args.window) + grace_seconds
+        status = "LIVE" if is_live else "waiting for open"
+        console.print(
+            f"\n[green]{market.get('question', '')}[/green]  "
+            f"[dim]{slug}  ({status}, ~{deadline - time.time():.0f}s until next discovery)[/dim]"
+        )
+
+        try:
+            await _stream_subscription(
+                asset_map, sink, tracker, log_every, deadline=deadline
+            )
+        except Exception as exc:
+            console.print(
+                f"[red]Stream error ({type(exc).__name__}): {exc}; retry in 5s[/red]"
+            )
+            await asyncio.sleep(5)
+        else:
+            console.print("[yellow]Window ended, rediscovering…[/yellow]")
 
 
 async def run(args: argparse.Namespace) -> None:
     console.print(Rule("[bold cyan]Polymarket CLOB → Kafka[/bold cyan]"))
-
-    asset_map = await select_markets(args)
-    if not asset_map:
-        return
-
-    subscribe_msg = {"assets_ids": list(asset_map.keys()), "type": "market"}
     log_every = 50 if args.debug else 500
-
-    console.print(f"\n[cyan]Subscribing to {len(asset_map)} tokens…[/cyan]")
     tracker = RateTracker()
 
     async with KafkaSink(args.kafka_bootstrap) as sink:
         console.print(f"[green]Kafka → {sink.bootstrap}[/green]")
-        async with websockets.connect(
-            CLOB_WS,
-            ssl=ssl_context(),
-            ping_interval=10,
-            ping_timeout=15,
-            max_size=10 * 1024 * 1024,
-        ) as ws:
-            await ws.send(json.dumps(subscribe_msg))
-            console.print("[bold green]Streaming…[/bold green]")
-            await stream(ws, asset_map, sink, tracker, log_every)
+        if args.asset:
+            await _run_rolling(args, sink, tracker, log_every)
+        else:
+            await _run_static(args, sink, tracker, log_every)
 
 
 def main() -> None:

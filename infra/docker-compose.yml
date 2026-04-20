@@ -53,6 +53,7 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_INSTALL_PLUGINS: hamedkarbasi93-kafka-datasource
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: hamedkarbasi93-kafka-datasource
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
     volumes:

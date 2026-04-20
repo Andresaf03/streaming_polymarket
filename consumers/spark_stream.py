@@ -47,6 +47,7 @@ from pyspark.sql.functions import (
     floor,
     from_json,
     hour,
+    lit,
     max as spark_max,
     min as spark_min,
     struct,
@@ -66,6 +67,7 @@ from pyspark.sql.types import (
 
 KAFKA_TOPICS = ["polymarket.events", "binance.trades", "binance.book"]
 STATS_TOPIC = "stats.windowed"
+FORECAST_TOPIC = "btc.forecast"
 KAFKA_PACKAGE = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1"
 
 # Union of flat payload fields across all producers. Nested bids/asks arrays
@@ -95,6 +97,7 @@ PAYLOAD_SCHEMA = StructType([
 MARKET_SCHEMA = StructType([
     StructField("question", StringType()),
     StructField("slug", StringType()),
+    StructField("outcome", StringType()),   # "Yes" | "No" for binary markets
 ])
 
 ENVELOPE_SCHEMA = StructType([
@@ -189,7 +192,65 @@ def extract_price_events(parsed: DataFrame) -> DataFrame:
         .select(
             "source", "type", "ident", "ts",
             "price", "price_bucket",
+            col("market.slug").alias("market_slug"),
+            col("market.outcome").alias("market_outcome"),
             "date", "hour",
+        )
+    )
+
+
+def forecast_stats(
+    events: DataFrame, sigma: float, watermark: str, slug_prefix: str
+) -> DataFrame:
+    """Emit `{ts, btc_mid, poly_prob, drift, forecast, sigma}` per 1-second window.
+
+    forecast = btc_mid + (2·poly_prob − 1) × σ
+
+    Consumes the normalized `events` DataFrame so price extraction lives in
+    exactly one place (extract_price_events). The two conditional aggregates
+    avoid a proper stream-stream join between Binance and Polymarket.
+    Seconds where only one of the two streams arrived produce partial (null)
+    output; we let the gap show rather than forward-fill, so the dashboard
+    honestly reflects "no active BTC 5-min market right now" windows.
+
+    Polymarket binary markets use different outcome labels by market family:
+      btc-updown-*   →  ["Up",  "Down"]
+      most others    →  ["Yes", "No"]
+    Both are accepted so the same filter works across market types.
+    """
+    btc_price = when(
+        (col("source") == "binance")
+        & (col("ident") == "btcusdt")
+        & (col("type") == "bookTicker"),
+        col("price"),
+    )
+    poly_prob = when(
+        (col("source") == "polymarket")
+        & col("market_slug").startswith(slug_prefix)
+        & col("market_outcome").isin("Up", "Yes"),
+        col("price"),
+    )
+
+    return (
+        events
+        .withColumn("_btc", btc_price)
+        .withColumn("_poly", poly_prob)
+        .withWatermark("ts", watermark)
+        .groupBy(window(col("ts"), "1 second"))
+        .agg(
+            avg("_btc").alias("btc_mid"),
+            avg("_poly").alias("poly_prob"),
+        )
+        .withColumn("drift", (col("poly_prob") * 2 - 1) * lit(sigma))
+        .withColumn("forecast", col("btc_mid") + col("drift"))
+        .withColumn("sigma", lit(sigma))
+        .select(
+            col("window.start").alias("ts"),
+            col("btc_mid"),
+            col("poly_prob"),
+            col("drift"),
+            col("forecast"),
+            col("sigma"),
         )
     )
 
@@ -253,6 +314,28 @@ def start_kafka_stats_sink(stats: DataFrame, bootstrap: str, checkpoint_path: st
     )
 
 
+def start_kafka_forecast_sink(
+    forecast: DataFrame, bootstrap: str, checkpoint_path: str
+):
+    # Write every forecast record to partition 0 so the Grafana Kafka plugin —
+    # which queries a single partition per target — sees every message without
+    # having to fan out three queries. At 1 msg/s the topic doesn't need
+    # parallelism.
+    value = forecast.select(
+        lit(0).alias("partition"),
+        to_json(struct("*")).alias("value"),
+    )
+    return (
+        value.writeStream
+        .format("kafka")
+        .option("kafka.bootstrap.servers", bootstrap)
+        .option("topic", FORECAST_TOPIC)
+        .option("checkpointLocation", os.path.join(checkpoint_path, "forecast"))
+        .outputMode("append")
+        .start()
+    )
+
+
 def start_console_sink(stats: DataFrame):
     return (
         stats.writeStream
@@ -273,9 +356,13 @@ def run(args: argparse.Namespace) -> None:
     parsed = parse_envelope(raw)
     events = extract_price_events(parsed)
     stats = windowed_stats(events, args.window, args.watermark)
+    forecast = forecast_stats(
+        events, args.sigma, args.forecast_watermark, args.forecast_slug_prefix
+    )
 
     start_parquet_sink(events, args.output_path, args.checkpoint_path)
     start_kafka_stats_sink(stats, args.kafka_bootstrap, args.checkpoint_path)
+    start_kafka_forecast_sink(forecast, args.kafka_bootstrap, args.checkpoint_path)
     if args.console:
         start_console_sink(stats)
 
@@ -298,8 +385,31 @@ def main() -> None:
         "--checkpoint-path",
         default=os.environ.get("CHECKPOINT_PATH", "data/checkpoints/spark"),
     )
-    parser.add_argument("--window", default="1 minute", help="Tumbling window size")
-    parser.add_argument("--watermark", default="30 seconds")
+    parser.add_argument("--window", default="1 minute", help="Tumbling window size for stats")
+    parser.add_argument(
+        "--watermark",
+        default="30 seconds",
+        help="Watermark for the stats aggregation (matches the 1-min window cadence)",
+    )
+    parser.add_argument(
+        "--forecast-watermark",
+        default="10 seconds",
+        help="Watermark for the live forecast query (shorter because windows are 1s; "
+             "trades late-data tolerance for dashboard freshness)",
+    )
+    parser.add_argument(
+        "--forecast-slug-prefix",
+        default="btc-updown-5m-",
+        help="Polymarket slug prefix used to filter events for the forecast. "
+             "Change to btc-updown-15m- for the 15-min variant, etc.",
+    )
+    parser.add_argument(
+        "--sigma",
+        type=float,
+        default=50.0,
+        help="5-min BTC return stddev in $ (hardcoded for Phase 3; replace with "
+             "rolling estimate in Phase 5)",
+    )
     parser.add_argument("--console", action="store_true", help="Also print stats to console")
     args = parser.parse_args()
     run(args)
