@@ -21,6 +21,16 @@ def parse_token_ids(raw) -> list[str]:
         return []
 
 
+def parse_outcomes(raw) -> list[str]:
+    """Gamma API returns outcomes as a JSON-encoded string or a list, parallel
+    to clobTokenIds. Binary markets are ['Yes', 'No']."""
+    try:
+        vals = json.loads(raw) if isinstance(raw, str) else raw
+        return [str(v) for v in vals] if vals else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
 async def fetch_top_markets(
     session: aiohttp.ClientSession, query: str | None, top_n: int
 ) -> list[dict]:
@@ -66,10 +76,20 @@ async def fetch_updown_market(
 
 
 def build_asset_map(markets: list[dict]) -> dict[str, dict]:
-    """asset_id → {question, slug}. One entry per clobTokenId across all markets."""
+    """asset_id → {question, slug, outcome}. One entry per clobTokenId.
+
+    outcomes and clobTokenIds are parallel arrays in the Gamma response
+    (['Yes', 'No'] for binary markets). Downstream uses outcome to identify
+    the 'Yes' token when computing an implied probability.
+    """
     asset_map: dict[str, dict] = {}
     for m in markets:
-        meta = {"question": m.get("question", ""), "slug": m.get("slug", "")}
-        for tid in parse_token_ids(m.get("clobTokenIds", [])):
-            asset_map[tid] = meta
+        token_ids = parse_token_ids(m.get("clobTokenIds", []))
+        outcomes = parse_outcomes(m.get("outcomes", []))
+        for i, tid in enumerate(token_ids):
+            asset_map[tid] = {
+                "question": m.get("question", ""),
+                "slug": m.get("slug", ""),
+                "outcome": outcomes[i] if i < len(outcomes) else None,
+            }
     return asset_map

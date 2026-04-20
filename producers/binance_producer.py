@@ -23,7 +23,7 @@ from typing import Iterable
 import websockets
 from rich.console import Console
 
-from common import KafkaSink, RateTracker, envelope, ssl_context
+from common import KafkaSink, RateTracker, envelope, log_progress, ssl_context
 
 BINANCE_WS = "wss://stream.binance.com:9443/stream"
 DEFAULT_SYMBOLS = ["btcusdt", "ethusdt", "solusdt"]
@@ -65,18 +65,11 @@ async def publish(raw: bytes | str, sink: KafkaSink, tracker: RateTracker) -> No
     tracker.record(label=stream_type)
 
 
-def log_progress(tracker: RateTracker) -> None:
-    console.print(
-        f"[dim]rate={tracker.rate()}/s  avg={tracker.avg_rate:.1f}/s  "
-        f"total={tracker.total}  counts={tracker.counts}[/dim]"
-    )
-
-
 async def stream(ws, sink: KafkaSink, tracker: RateTracker, log_every: int) -> None:
     async for raw in ws:
         await publish(raw, sink, tracker)
         if tracker.total % log_every == 0:
-            log_progress(tracker)
+            log_progress(console, tracker)
 
 
 async def run(
