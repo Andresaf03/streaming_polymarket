@@ -1,0 +1,35 @@
+[project]
+name = "streaming-polymarket"
+version = "0.1.0"
+description = "Polymarket CLOB + Binance → Kafka → Spark Streaming pipeline"
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp>=3.9",
+    "websockets>=12",
+    "aiokafka>=0.11",
+    "rich>=13.7",
+    "certifi>=2024.2",
+]
+
+[project.optional-dependencies]
+spark = ["pyspark>=3.5", "pandas>=2", "numpy>=1.26"]
+ml = ["scikit-learn>=1.4", "lightgbm>=4.3", "pandas>=2", "numpy>=1.26"]
+all = [
+    "pyspark>=3.5",
+    "pandas>=2",
+    "numpy>=1.26",
+    "scikit-learn>=1.4",
+    "lightgbm>=4.3",
+]
+
+[project.scripts]
+binance-producer = "producers.binance_producer:main"
+polymarket-producer = "producers.polymarket_producer:main"
+throughput-probe = "tools.throughput_probe:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["common", "producers", "tools"]
