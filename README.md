@@ -59,11 +59,17 @@ Polymarket CLOB WebSocket
 ### Setup
 
 ```bash
-cd proyecto/
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .              # Phase 1 — core deps only (aiohttp, websockets, aiokafka, rich)
+# pip install -e '.[all]'     # later phases — adds pyspark, lightgbm, etc.
 ```
+
+After install, three console commands are available:
+
+- `binance-producer` — Binance WS → Kafka
+- `polymarket-producer` — Polymarket CLOB WS → Kafka
+- `throughput-probe` — measure sustained Kafka ingest rate
 
 ### Correr el live feed
 
