@@ -12,12 +12,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-spark = ["pyspark>=3.5", "pandas>=2", "numpy>=1.26"]
+# pyspark pinned <4 — Spark 4.x uses Scala 2.13 but our spark-sql-kafka
+# connector is the 2.12 build (matching class notes / Databricks Runtime).
+spark = ["pyspark>=3.5,<4", "pandas>=2", "numpy>=1.26", "pyarrow>=15"]
 ml = ["scikit-learn>=1.4", "lightgbm>=4.3", "pandas>=2", "numpy>=1.26"]
 all = [
-    "pyspark>=3.5",
+    "pyspark>=3.5,<4",
     "pandas>=2",
     "numpy>=1.26",
+    "pyarrow>=15",
     "scikit-learn>=1.4",
     "lightgbm>=4.3",
 ]
@@ -26,10 +29,11 @@ all = [
 binance-producer = "producers.binance_producer:main"
 polymarket-producer = "producers.polymarket_producer:main"
 throughput-probe = "tools.throughput_probe:main"
+spark-stream = "consumers.spark_stream:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["common", "producers", "tools"]
+packages = ["common", "producers", "consumers", "tools"]
