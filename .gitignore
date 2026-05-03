@@ -65,3 +65,9 @@ models/
 *.pt
 *.pkl
 *.joblib
+
+# Tracked Phase 5 artifacts — small enough to ship for reproducibility.
+# Everything else under data/ remains ignored (raw ticks are GB-scale).
+!data/training.parquet
+!data/model.sarimax.pkl
+!data/feature_list.json
