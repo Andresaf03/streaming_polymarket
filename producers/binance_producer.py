@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import json
 import os
+import time
 from typing import Iterable
 
 import websockets
@@ -72,6 +73,48 @@ async def stream(ws, sink: KafkaSink, tracker: RateTracker, log_every: int) -> N
             log_progress(console, tracker)
 
 
+async def _stream_with_reconnect(
+    url: str, sink: KafkaSink, tracker: RateTracker, log_every: int
+) -> None:
+    """Run `stream()` forever, reconnecting on any WS error with backoff.
+
+    Backoff schedule: 1s → 2s → 4s → 8s → 16s → 32s → 60s cap. Resets to 1s
+    whenever a connection stayed up for more than 30s, so transient flaps
+    don't keep stretching the wait. open_timeout is bumped to 30s because
+    Binance's TLS handshake occasionally exceeds the 10s default.
+    """
+    backoff = 1.0
+    while True:
+        connect_start = time.monotonic()
+        try:
+            async with websockets.connect(
+                url,
+                ssl=ssl_context(),
+                open_timeout=30,
+                ping_interval=180,
+                ping_timeout=600,
+                max_size=10 * 1024 * 1024,
+            ) as ws:
+                console.print("[bold green]Streaming…[/bold green]")
+                await stream(ws, sink, tracker, log_every)
+            uptime = time.monotonic() - connect_start
+            console.print(
+                f"[yellow]binance WS closed normally after {uptime:.0f}s[/yellow]"
+            )
+        except Exception as exc:
+            uptime = time.monotonic() - connect_start
+            console.print(
+                f"[red]binance WS error after {uptime:.0f}s: "
+                f"{type(exc).__name__}: {exc}[/red]"
+            )
+
+        if uptime > 30:
+            backoff = 1.0
+        console.print(f"[yellow]reconnecting in {backoff:.0f}s…[/yellow]")
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, 60.0)
+
+
 async def run(
     bootstrap: str, symbols: list[str], streams: list[str], debug: bool
 ) -> None:
@@ -84,15 +127,7 @@ async def run(
     tracker = RateTracker()
     async with KafkaSink(bootstrap) as sink:
         console.print(f"[green]Kafka → {sink.bootstrap}[/green]")
-        async with websockets.connect(
-            url,
-            ssl=ssl_context(),
-            ping_interval=180,
-            ping_timeout=600,
-            max_size=10 * 1024 * 1024,
-        ) as ws:
-            console.print("[bold green]Streaming…[/bold green]")
-            await stream(ws, sink, tracker, log_every)
+        await _stream_with_reconnect(url, sink, tracker, log_every)
 
 
 def main() -> None:

@@ -196,12 +196,38 @@ async def _run_static(
     tracker: RateTracker,
     log_every: int,
 ) -> None:
-    """Single discovery + single long-lived WS. For --query / --all / default."""
+    """Single discovery + reconnecting long-lived WS. For --query / --all / default.
+
+    Same backoff scheme as the rolling path: 1s → 60s cap, reset to 1s after
+    the stream stayed up for >30s. The discovered asset_map is reused on every
+    reconnect (these markets don't roll over like the up-down ones).
+    """
     asset_map = await select_markets(args)
     if not asset_map:
         return
     console.print(f"\n[cyan]Subscribing to {len(asset_map)} tokens…[/cyan]")
-    await _stream_subscription(asset_map, sink, tracker, log_every)
+
+    backoff = 1.0
+    while True:
+        connect_start = time.monotonic()
+        try:
+            await _stream_subscription(asset_map, sink, tracker, log_every)
+            uptime = time.monotonic() - connect_start
+            console.print(
+                f"[yellow]polymarket WS closed normally after {uptime:.0f}s[/yellow]"
+            )
+        except Exception as exc:
+            uptime = time.monotonic() - connect_start
+            console.print(
+                f"[red]polymarket WS error after {uptime:.0f}s: "
+                f"{type(exc).__name__}: {exc}[/red]"
+            )
+
+        if uptime > 30:
+            backoff = 1.0
+        console.print(f"[yellow]reconnecting in {backoff:.0f}s…[/yellow]")
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, 60.0)
 
 
 async def _run_rolling(
