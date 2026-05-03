@@ -30,12 +30,23 @@ from __future__ import annotations
 import argparse
 import json
 import pickle
+import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from statsmodels.tools.sm_exceptions import ConvergenceWarning, ValueWarning
 from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+# Silence statsmodels noise that floods the console with no actionable info:
+#   - ConvergenceWarning fires on orders the AIC grid will reject anyway
+#     (we exclude NaN-AIC candidates downstream).
+#   - ValueWarning / FutureWarning are about the missing index frequency on
+#     the loaded Parquet; doesn't affect estimation or forecast accuracy.
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+warnings.filterwarnings("ignore", category=ValueWarning)
+warnings.filterwarnings("ignore", category=FutureWarning, module="statsmodels.*")
 
 EXOG = ["poly_p_up", "poly_p_up_change_5m", "btc_volatility_5m"]
 TARGET = "log_return_5m"
@@ -103,26 +114,59 @@ def select_order(y_train: pd.Series, exog_train: pd.DataFrame,
 def walk_forward(y_train: pd.Series, exog_train: pd.DataFrame,
                  y_ho: pd.Series, exog_ho: pd.DataFrame,
                  order: tuple[int, int, int]) -> np.ndarray:
-    """Refit at each step on cumulative history; warm-started; 1-step-ahead forecast."""
-    history_y = y_train.copy()
-    history_x = exog_train.copy()
-    prev_params: np.ndarray | None = None
+    """Walk-forward 1-step-ahead forecast using append(refit=False).
+
+    Standard production pattern: fit SARIMAX once on the training set, then
+    for each holdout step:
+      1. Forecast 1 step ahead given that step's exogenous values.
+      2. Append the realized (y, exog) to update the Kalman filter state.
+      3. Keep the MLE parameters frozen — no re-optimization per step.
+
+    Trades a bit of estimation honesty (vs. full refit) for ~50× speed:
+    fits ≈ 1 (cold) + N×O(state_update) instead of N×O(MLE).
+    """
+    print(f"\nwalk-forward over {len(y_ho)} holdout rows "
+          f"(fit-once + append, no per-step refit)...")
+    fit = fit_sarimax(y_train, exog_train, order)
     preds: list[float] = []
+    forecast_failures = 0
+    state_failures = 0
 
-    print(f"\nwalk-forward over {len(y_ho)} holdout rows (refit each step)...")
     for i in range(len(y_ho)):
+        # 1. Forecast next step. Always append exactly one entry to preds.
         try:
-            fit = fit_sarimax(history_y, history_x, order, start_params=prev_params)
-            prev_params = fit.params.values
-            next_exog = exog_ho.iloc[i:i + 1]
-            forecast = fit.forecast(steps=1, exog=next_exog)
-            preds.append(float(forecast.iloc[0]))
+            forecast = fit.forecast(steps=1, exog=exog_ho.iloc[i:i + 1])
+            pred = float(forecast.iloc[0])
         except Exception as exc:
-            print(f"  step {i}: {type(exc).__name__} → 0.0 fallback")
-            preds.append(0.0)
+            if forecast_failures < 3:
+                print(f"  step {i} forecast: {type(exc).__name__}: {exc}")
+            pred = 0.0
+            forecast_failures += 1
+        preds.append(pred)
 
-        history_y = pd.concat([history_y, y_ho.iloc[i:i + 1]])
-        history_x = pd.concat([history_x, exog_ho.iloc[i:i + 1]])
+        # 2. Update the Kalman state with the realized observation.
+        # Failure here is non-fatal — predictions get worse from this point
+        # on (stale state), but the loop still produces one pred per holdout.
+        try:
+            fit = fit.append(
+                y_ho.iloc[i:i + 1],
+                exog=exog_ho.iloc[i:i + 1],
+                refit=False,
+            )
+        except Exception as exc:
+            if state_failures < 3:
+                print(f"  step {i} state update: {type(exc).__name__}: {exc}")
+            state_failures += 1
+
+        if (i + 1) % 100 == 0:
+            print(f"  step {i + 1}/{len(y_ho)}")
+
+    if forecast_failures:
+        print(f"  forecast failed on {forecast_failures}/{len(y_ho)} steps "
+              f"(used 0.0 fallback)")
+    if state_failures:
+        print(f"  state update failed on {state_failures}/{len(y_ho)} steps "
+              f"(continued with stale state)")
 
     return np.array(preds)
 
@@ -143,6 +187,12 @@ def main() -> None:
     args = parser.parse_args()
 
     df = pd.read_parquet(args.training_path).sort_index()
+    # SARIMAX's append() requires time-contiguous indices. Our snapshot grid
+    # has gaps (dropna removes minutes where features or future label are
+    # missing), so we drop the DatetimeIndex in favor of a sequential integer
+    # one. The actual timestamps are still implicit in row order — predictions
+    # align to holdout rows positionally.
+    df = df.reset_index(drop=True)
     print(f"loaded {args.training_path}: {len(df):,} rows")
 
     cutoff = int(len(df) * (1 - args.holdout_frac))
