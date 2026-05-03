@@ -1,39 +1,43 @@
 #!/usr/bin/env python3
 """
-train_model.py — LightGBM regressor on the prepared training table.
+train_model.py — SARIMAX regressor on the prepared training table.
 
-Predicts BTC's 5-minute log return so the model lives on the same axis as
-the dashboard's `implied_target` line (which is built from Polymarket's
-implied drift). Apples-to-apples three-line comparison:
-    actual BTC   ←  realized
-    Polymarket   ←  (2·P_up − 1) × σ_log
-    model        ←  this regressor
+Why SARIMAX (not LightGBM):
+  At ~hundreds-of-rows scale and 5-minute-return horizon, a sequence-aware
+  linear model with exogenous regressors is the textbook fit. ARIMA's AR
+  and MA terms model autocorrelation in the return series itself; the
+  exogenous block adds Polymarket P(up) and BTC trailing volatility as
+  features that move the conditional mean.
 
-Holdout metrics report all three so we can answer "do we beat Polymarket
-on RMSE?" — and a directional-accuracy line is included as a sanity check.
+Endogenous : log_return_5m
+Exogenous  : poly_p_up, poly_p_up_change_5m, btc_volatility_5m
+Order      : SARIMAX(p, 0, q), no seasonal, no differencing (5-min log
+             returns are stationary by construction).
+Selection  : AIC grid search over p, q ∈ {0..max_p} × {0..max_q}
+             (excluding pure noise (0,0,0)).
+Validation : walk-forward — re-fit at each holdout step, warm-started from
+             the previous fit's parameters for speed, predict 1 step ahead.
+Output     : pickled SARIMAXResults at data/model.sarimax.pkl, plus a JSON
+             with chosen order, σ_log, exog list, and the AIC grid.
 
 Usage:
     train-model
-    train-model --holdout-frac 0.3 --num-rounds 300
+    train-model --max-p 2 --max-q 2 --holdout-frac 0.3
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import pickle
 from pathlib import Path
 
-import lightgbm as lgb
 import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 
-FEATURES = [
-    "btc_return_5m",
-    "btc_volatility_5m",
-    "poly_p_up",
-    "poly_p_up_change_5m",
-]
+EXOG = ["poly_p_up", "poly_p_up_change_5m", "btc_volatility_5m"]
 TARGET = "log_return_5m"
 
 
@@ -41,34 +45,101 @@ def report(name: str, y_true: pd.Series, y_pred: np.ndarray) -> None:
     """Print regression + directional-accuracy metrics for one prediction series."""
     rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
     mae = float(mean_absolute_error(y_true, y_pred))
-    # Directional accuracy ignores rows where the realized return was exactly 0.
     nonzero = y_true != 0
     if nonzero.any():
         dir_acc = float(np.mean(np.sign(y_pred[nonzero]) == np.sign(y_true[nonzero])))
     else:
         dir_acc = float("nan")
     print(
-        f"  {name:<26}  "
+        f"  {name:<28}  "
         f"RMSE={rmse * 10_000:6.2f} bps  "
         f"MAE={mae * 10_000:6.2f} bps  "
         f"dir_acc={dir_acc * 100:5.1f}%"
     )
 
 
+def fit_sarimax(y: pd.Series, exog: pd.DataFrame, order: tuple[int, int, int],
+                start_params: np.ndarray | None = None):
+    """Fit SARIMAX(p, 0, q), no seasonal. enforce_* off so the optimizer
+    doesn't reject otherwise-fine parameter sets on a non-stationary draw."""
+    model = SARIMAX(
+        y,
+        exog=exog,
+        order=order,
+        enforce_stationarity=False,
+        enforce_invertibility=False,
+    )
+    return model.fit(disp=False, start_params=start_params)
+
+
+def select_order(y_train: pd.Series, exog_train: pd.DataFrame,
+                 max_p: int, max_q: int) -> tuple[tuple[int, int, int], list[dict]]:
+    """AIC grid search. Returns the best (p, 0, q) and the full grid for diagnostics."""
+    candidates: list[dict] = []
+    print(f"\nAIC grid search over p, q ∈ {{0..{max_p}}} × {{0..{max_q}}} "
+          f"(excluding pure white noise):")
+    for p in range(max_p + 1):
+        for q in range(max_q + 1):
+            if p == 0 and q == 0:
+                continue
+            try:
+                fit = fit_sarimax(y_train, exog_train, (p, 0, q))
+                aic = float(fit.aic)
+                candidates.append({"order": (p, 0, q), "aic": aic})
+                print(f"  ({p},0,{q})  AIC={aic:.2f}")
+            except Exception as exc:
+                candidates.append({"order": (p, 0, q), "aic": float("nan"),
+                                   "error": f"{type(exc).__name__}: {exc}"})
+                print(f"  ({p},0,{q})  failed: {type(exc).__name__}")
+
+    valid = [c for c in candidates if np.isfinite(c["aic"])]
+    if not valid:
+        raise SystemExit("no SARIMAX order converged — collect more data")
+    best = min(valid, key=lambda c: c["aic"])
+    print(f"\nbest order: {tuple(best['order'])} (AIC={best['aic']:.2f})")
+    return tuple(best["order"]), candidates
+
+
+def walk_forward(y_train: pd.Series, exog_train: pd.DataFrame,
+                 y_ho: pd.Series, exog_ho: pd.DataFrame,
+                 order: tuple[int, int, int]) -> np.ndarray:
+    """Refit at each step on cumulative history; warm-started; 1-step-ahead forecast."""
+    history_y = y_train.copy()
+    history_x = exog_train.copy()
+    prev_params: np.ndarray | None = None
+    preds: list[float] = []
+
+    print(f"\nwalk-forward over {len(y_ho)} holdout rows (refit each step)...")
+    for i in range(len(y_ho)):
+        try:
+            fit = fit_sarimax(history_y, history_x, order, start_params=prev_params)
+            prev_params = fit.params.values
+            next_exog = exog_ho.iloc[i:i + 1]
+            forecast = fit.forecast(steps=1, exog=next_exog)
+            preds.append(float(forecast.iloc[0]))
+        except Exception as exc:
+            print(f"  step {i}: {type(exc).__name__} → 0.0 fallback")
+            preds.append(0.0)
+
+        history_y = pd.concat([history_y, y_ho.iloc[i:i + 1]])
+        history_x = pd.concat([history_x, exog_ho.iloc[i:i + 1]])
+
+    return np.array(preds)
+
+
 def polymarket_implied_log_return(p_up: pd.Series, sigma_log: float) -> np.ndarray:
-    """Convert Polymarket P(up) to an implied log return using σ_log of past returns."""
-    return ((2.0 * p_up.to_numpy() - 1.0) * sigma_log)
+    """(2·P − 1)·σ — same form as the dashboard's drift, in log-return space."""
+    return (2.0 * p_up.to_numpy() - 1.0) * sigma_log
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train LightGBM regressor on training.parquet")
+    parser = argparse.ArgumentParser(description="Train SARIMAX on training.parquet")
     parser.add_argument("--training-path", default="data/training.parquet")
-    parser.add_argument("--model-out", default="data/model.lgb")
+    parser.add_argument("--model-out", default="data/model.sarimax.pkl")
     parser.add_argument("--features-out", default="data/feature_list.json")
     parser.add_argument("--holdout-frac", type=float, default=0.2)
-    parser.add_argument("--num-rounds", type=int, default=200)
-    parser.add_argument("--learning-rate", type=float, default=0.05)
-    parser.add_argument("--num-leaves", type=int, default=31)
+    parser.add_argument("--max-p", type=int, default=3)
+    parser.add_argument("--max-q", type=int, default=3)
     args = parser.parse_args()
 
     df = pd.read_parquet(args.training_path).sort_index()
@@ -76,8 +147,11 @@ def main() -> None:
 
     cutoff = int(len(df) * (1 - args.holdout_frac))
     train, holdout = df.iloc[:cutoff], df.iloc[cutoff:]
-    if len(train) == 0 or len(holdout) == 0:
-        raise SystemExit("not enough data — collect more ticks before training")
+    if len(train) < 10 or len(holdout) < 5:
+        raise SystemExit(
+            f"not enough data — train={len(train)}, holdout={len(holdout)}; "
+            "need at least ~hundreds of training rows for a meaningful SARIMAX fit"
+        )
     print(f"  train: {len(train):,}  holdout: {len(holdout):,}")
     print(
         f"  realized return (bps) train mean={train[TARGET].mean()*1e4:.3f}, "
@@ -86,54 +160,52 @@ def main() -> None:
         f"std={holdout[TARGET].std()*1e4:.3f}"
     )
 
-    X_tr, y_tr = train[FEATURES], train[TARGET]
-    X_ho, y_ho = holdout[FEATURES], holdout[TARGET]
+    y_tr, X_tr = train[TARGET], train[EXOG]
+    y_ho, X_ho = holdout[TARGET], holdout[EXOG]
 
-    params = {
-        "objective": "regression",
-        "metric": "rmse",
-        "learning_rate": args.learning_rate,
-        "num_leaves": args.num_leaves,
-        "feature_fraction": 0.8,
-        "bagging_fraction": 0.8,
-        "bagging_freq": 5,
-        "verbose": -1,
-    }
-    model = lgb.train(params, lgb.Dataset(X_tr, y_tr), num_boost_round=args.num_rounds)
+    best_order, aic_grid = select_order(y_tr, X_tr, args.max_p, args.max_q)
+    p_ho = walk_forward(y_tr, X_tr, y_ho, X_ho, best_order)
 
-    p_tr = model.predict(X_tr)
-    p_ho = model.predict(X_ho)
+    # In-sample fit on training set, used for the "model · train" report row
+    # and as the persisted artifact (consumed by score_stream.py later).
+    final_fit = fit_sarimax(y_tr, X_tr, best_order)
+    p_tr = final_fit.fittedvalues.to_numpy()
 
-    # σ_log baseline: stddev of training-set returns. Used to convert
-    # Polymarket's P(up) into an implied log return. Identical math to the
-    # dashboard's drift, just expressed in log space instead of dollars.
     sigma_log = float(y_tr.std())
     p_poly_ho = polymarket_implied_log_return(X_ho["poly_p_up"], sigma_log)
-    p_zero_ho = np.zeros_like(p_ho)  # drift-naive baseline
+    p_zero_ho = np.zeros_like(p_ho)
 
     print(f"\nσ_log (train) = {sigma_log:.6f}  ({sigma_log * 10_000:.2f} bps)")
 
-    print("\nmetrics  (lower RMSE / MAE is better; dir_acc > 50% means signal):")
-    report("model · train", y_tr, p_tr)
-    report("model · holdout", y_ho, p_ho)
+    print("\nmetrics  (lower RMSE/MAE is better; dir_acc > 50% means signal):")
+    report("model · train (in-sample)", y_tr, p_tr)
+    report("model · holdout (walk-fwd)", y_ho, p_ho)
     report("polymarket · holdout", y_ho, p_poly_ho)
     report("zero-baseline · holdout", y_ho, p_zero_ho)
 
-    print("\nfeature importance (gain):")
-    imp = (
-        pd.Series(model.feature_importance(importance_type="gain"), index=FEATURES)
-        .sort_values(ascending=False)
-    )
-    for f, v in imp.items():
-        print(f"  {f:<28} {v:>12.0f}")
+    print("\ncoefficient summary (SARIMAX on training data):")
+    try:
+        print(final_fit.summary().tables[1])
+    except Exception:
+        # statsmodels can fail to render the table for very small fits;
+        # don't let that mask a successful save.
+        print("  (summary table unavailable for this fit)")
 
     out_model = Path(args.model_out)
     out_features = Path(args.features_out)
     out_model.parent.mkdir(parents=True, exist_ok=True)
-    model.save_model(str(out_model))
-    out_features.write_text(
-        json.dumps({"features": FEATURES, "target": TARGET, "sigma_log": sigma_log}, indent=2)
-    )
+    with open(out_model, "wb") as fh:
+        pickle.dump(final_fit, fh)
+    out_features.write_text(json.dumps(
+        {
+            "exog": EXOG,
+            "target": TARGET,
+            "order": list(best_order),
+            "sigma_log": sigma_log,
+            "aic_grid": aic_grid,
+        },
+        indent=2,
+    ))
     print(f"\nsaved {out_model}, {out_features}")
 
 

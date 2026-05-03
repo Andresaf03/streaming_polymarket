@@ -15,7 +15,14 @@ dependencies = [
 # pyspark pinned <4 — Spark 4.x uses Scala 2.13 but our spark-sql-kafka
 # connector is the 2.12 build (matching class notes / Databricks Runtime).
 spark = ["pyspark>=3.5,<4", "pandas>=2", "numpy>=1.26", "pyarrow>=15"]
-ml = ["scikit-learn>=1.4", "lightgbm>=4.3", "pandas>=2", "numpy>=1.26"]
+ml = [
+    "scikit-learn>=1.4",
+    "lightgbm>=4.3",
+    "statsmodels>=0.14",
+    "pandas>=2",
+    "numpy>=1.26",
+    "pyarrow>=15",
+]
 all = [
     "pyspark>=3.5,<4",
     "pandas>=2",
@@ -23,6 +30,7 @@ all = [
     "pyarrow>=15",
     "scikit-learn>=1.4",
     "lightgbm>=4.3",
+    "statsmodels>=0.14",
 ]
 
 [project.scripts]
