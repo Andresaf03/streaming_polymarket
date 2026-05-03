@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
-train_model.py — train a LightGBM classifier on the prepared training table.
+train_model.py — LightGBM regressor on the prepared training table.
 
-Reads `data/training.parquet`, splits time-wise (oldest → train, newest →
-holdout), fits LightGBM, reports AUC + log loss + Brier on both halves, and
-also reports the same metrics for the Polymarket implied probability used
-on its own as a baseline (so we can answer "do we beat the market?").
+Predicts BTC's 5-minute log return so the model lives on the same axis as
+the dashboard's `implied_target` line (which is built from Polymarket's
+implied drift). Apples-to-apples three-line comparison:
+    actual BTC   ←  realized
+    Polymarket   ←  (2·P_up − 1) × σ_log
+    model        ←  this regressor
+
+Holdout metrics report all three so we can answer "do we beat Polymarket
+on RMSE?" — and a directional-accuracy line is included as a sanity check.
 
 Usage:
-    train-model                                  # data/training.parquet → data/model.lgb
+    train-model
     train-model --holdout-frac 0.3 --num-rounds 300
 """
 
@@ -19,8 +24,9 @@ import json
 from pathlib import Path
 
 import lightgbm as lgb
+import numpy as np
 import pandas as pd
-from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 FEATURES = [
     "btc_return_5m",
@@ -28,30 +34,34 @@ FEATURES = [
     "poly_p_up",
     "poly_p_up_change_5m",
 ]
+TARGET = "log_return_5m"
 
 
-def report(name: str, y_true: pd.Series, y_pred: pd.Series) -> None:
-    """Print AUC / log loss / Brier in a consistent block.
-
-    Handles tiny degenerate splits (holdout has only one class) without
-    crashing — AUC is undefined in that case, logloss/brier still are.
-    """
-    p = y_pred.clip(1e-3, 1 - 1e-3)
-    auc_str = (
-        f"{roc_auc_score(y_true, y_pred):.4f}"
-        if y_true.nunique() == 2
-        else "  n/a "
-    )
+def report(name: str, y_true: pd.Series, y_pred: np.ndarray) -> None:
+    """Print regression + directional-accuracy metrics for one prediction series."""
+    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
+    mae = float(mean_absolute_error(y_true, y_pred))
+    # Directional accuracy ignores rows where the realized return was exactly 0.
+    nonzero = y_true != 0
+    if nonzero.any():
+        dir_acc = float(np.mean(np.sign(y_pred[nonzero]) == np.sign(y_true[nonzero])))
+    else:
+        dir_acc = float("nan")
     print(
-        f"  {name:<22}  "
-        f"AUC={auc_str}  "
-        f"logloss={log_loss(y_true, p, labels=[0, 1]):.4f}  "
-        f"brier={brier_score_loss(y_true, y_pred):.4f}"
+        f"  {name:<26}  "
+        f"RMSE={rmse * 10_000:6.2f} bps  "
+        f"MAE={mae * 10_000:6.2f} bps  "
+        f"dir_acc={dir_acc * 100:5.1f}%"
     )
+
+
+def polymarket_implied_log_return(p_up: pd.Series, sigma_log: float) -> np.ndarray:
+    """Convert Polymarket P(up) to an implied log return using σ_log of past returns."""
+    return ((2.0 * p_up.to_numpy() - 1.0) * sigma_log)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train LightGBM on training.parquet")
+    parser = argparse.ArgumentParser(description="Train LightGBM regressor on training.parquet")
     parser.add_argument("--training-path", default="data/training.parquet")
     parser.add_argument("--model-out", default="data/model.lgb")
     parser.add_argument("--features-out", default="data/feature_list.json")
@@ -69,15 +79,19 @@ def main() -> None:
     if len(train) == 0 or len(holdout) == 0:
         raise SystemExit("not enough data — collect more ticks before training")
     print(f"  train: {len(train):,}  holdout: {len(holdout):,}")
-    print(f"  train labels: {train['label'].value_counts().to_dict()}")
-    print(f"  holdout labels: {holdout['label'].value_counts().to_dict()}")
+    print(
+        f"  realized return (bps) train mean={train[TARGET].mean()*1e4:.3f}, "
+        f"std={train[TARGET].std()*1e4:.3f}; "
+        f"holdout mean={holdout[TARGET].mean()*1e4:.3f}, "
+        f"std={holdout[TARGET].std()*1e4:.3f}"
+    )
 
-    X_tr, y_tr = train[FEATURES], train["label"]
-    X_ho, y_ho = holdout[FEATURES], holdout["label"]
+    X_tr, y_tr = train[FEATURES], train[TARGET]
+    X_ho, y_ho = holdout[FEATURES], holdout[TARGET]
 
     params = {
-        "objective": "binary",
-        "metric": "binary_logloss",
+        "objective": "regression",
+        "metric": "rmse",
         "learning_rate": args.learning_rate,
         "num_leaves": args.num_leaves,
         "feature_fraction": 0.8,
@@ -89,12 +103,21 @@ def main() -> None:
 
     p_tr = model.predict(X_tr)
     p_ho = model.predict(X_ho)
-    p_poly_ho = X_ho["poly_p_up"]
 
-    print("\nmetrics:")
+    # σ_log baseline: stddev of training-set returns. Used to convert
+    # Polymarket's P(up) into an implied log return. Identical math to the
+    # dashboard's drift, just expressed in log space instead of dollars.
+    sigma_log = float(y_tr.std())
+    p_poly_ho = polymarket_implied_log_return(X_ho["poly_p_up"], sigma_log)
+    p_zero_ho = np.zeros_like(p_ho)  # drift-naive baseline
+
+    print(f"\nσ_log (train) = {sigma_log:.6f}  ({sigma_log * 10_000:.2f} bps)")
+
+    print("\nmetrics  (lower RMSE / MAE is better; dir_acc > 50% means signal):")
     report("model · train", y_tr, p_tr)
     report("model · holdout", y_ho, p_ho)
     report("polymarket · holdout", y_ho, p_poly_ho)
+    report("zero-baseline · holdout", y_ho, p_zero_ho)
 
     print("\nfeature importance (gain):")
     imp = (
@@ -108,7 +131,9 @@ def main() -> None:
     out_features = Path(args.features_out)
     out_model.parent.mkdir(parents=True, exist_ok=True)
     model.save_model(str(out_model))
-    out_features.write_text(json.dumps(FEATURES, indent=2))
+    out_features.write_text(
+        json.dumps({"features": FEATURES, "target": TARGET, "sigma_log": sigma_log}, indent=2)
+    )
     print(f"\nsaved {out_model}, {out_features}")
 
 

@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-build_dataset.py — turn the Parquet tick archive into a (features, label) table.
+build_dataset.py — turn the Parquet tick archive into a (features, target) table.
 
 Reads `data/ticks/` (partitioned by source/date/hour), extracts BTC mid +
 Polymarket BTC-5m P(up), aligns them on a 1-minute snapshot grid, and writes
 a compact Parquet ready for `train-model`.
 
-Label: BTC mid is higher 5 minutes after the snapshot (binary).
+Target: `log_return_5m = log(BTC_mid_T+5 / BTC_mid_T)`. Continuous (regression).
+Picked over a binary "did it go up?" label because the dashboard already shows
+a market-implied *price* (drift derived from Polymarket P(up) × σ), and we want
+the model's output to live on the same axis — three lines, one chart, one
+unit. Sign-of-prediction can still drive a directional / calibration view if
+needed.
 
 Usage:
     build-dataset                                # data/ticks → data/training.parquet
@@ -105,22 +110,20 @@ def build_snapshots(
     df["btc_volatility_5m"] = df["btc_return_5m"].rolling(window=5).std()
     df["poly_p_up_change_5m"] = df["poly_p_up"] - df["poly_p_up"].shift(5)
 
-    # Label = sign of forward 5-minute return
+    # Regression target = forward 5-minute log return
     future = df["btc_mid"].shift(-label_horizon_min)
-    df["label"] = (future > df["btc_mid"]).astype("Int8")
-    df.loc[future.isna(), "label"] = pd.NA
+    df["log_return_5m"] = np.log(future / df["btc_mid"])
 
-    # Drop rows missing any feature or label
+    # Drop rows missing any feature or target
     needed = [
         "btc_mid",
         "btc_return_5m",
         "btc_volatility_5m",
         "poly_p_up",
         "poly_p_up_change_5m",
-        "label",
+        "log_return_5m",
     ]
     df = df.dropna(subset=needed)
-    df["label"] = df["label"].astype(int)
     return df
 
 
@@ -149,9 +152,10 @@ def main() -> None:
 
     df.to_parquet(out)
     print(f"\nwrote {out}")
-    print(f"\nlabel distribution: {df['label'].value_counts(normalize=True).round(3).to_dict()}")
+    print(f"\nlog_return_5m distribution (bps):")
+    print((df["log_return_5m"] * 10_000).describe().round(2).to_string())
     print("\nfeature summary:")
-    cols = [c for c in df.columns if c != "label"]
+    cols = [c for c in df.columns if c != "log_return_5m"]
     print(df[cols].describe().round(4).to_string())
 
 
