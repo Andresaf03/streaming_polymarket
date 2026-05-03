@@ -46,7 +46,7 @@ WS_CONNECT_KWARGS: dict = {
     "max_size": 10 * 1024 * 1024,
 }
 
-console = Console()
+console = Console(legacy_windows=False)
 
 
 def _slug_window_end(slug: str, window_min: int) -> float:

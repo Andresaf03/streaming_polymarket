@@ -31,7 +31,7 @@ DEFAULT_STREAMS = ["aggTrade", "bookTicker", "depth20@100ms"]
 TRADE_TOPIC = "binance.trades"
 BOOK_TOPIC = "binance.book"
 
-console = Console()
+console = Console(legacy_windows=False)
 
 
 def build_stream_url(symbols: Iterable[str], streams: Iterable[str]) -> str:

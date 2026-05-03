@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 
 # Isolate pyspark from any system-wide Spark/Hadoop installs before importing.
 # Homebrew's apache-spark + hadoop packages inject a different Spark version,
@@ -32,11 +33,18 @@ import os
 for _var in (
     "SPARK_HOME",
     "SPARK_CONF_DIR",
-    "HADOOP_HOME",
     "HADOOP_CONF_DIR",
     "PYSPARK_SUBMIT_ARGS",
 ):
     os.environ.pop(_var, None)
+
+if os.name == "nt":
+    _repo_root = Path(__file__).resolve().parents[1]
+    _local_hadoop = _repo_root / "infra" / "hadoop"
+    _winutils = _local_hadoop / "bin" / "winutils.exe"
+    if _winutils.exists():
+        os.environ.setdefault("HADOOP_HOME", str(_local_hadoop))
+        os.environ["PATH"] = f"{_local_hadoop / 'bin'};{os.environ.get('PATH', '')}"
 
 from pyspark.sql import DataFrame, SparkSession  # noqa: E402
 from pyspark.sql.functions import (

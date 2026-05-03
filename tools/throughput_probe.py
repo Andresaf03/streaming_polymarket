@@ -31,7 +31,7 @@ from common import RateTracker
 DEFAULT_TOPICS = ["polymarket.events", "binance.trades", "binance.book"]
 RUBRIC_TARGET = 4000  # msg/s
 
-console = Console()
+console = Console(legacy_windows=False)
 
 
 async def consume(

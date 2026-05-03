@@ -23,10 +23,14 @@ import websockets
 from rich.console import Console
 from rich.rule import Rule
 
+from common import configure_utf8_console
+
+configure_utf8_console()
+
 GAMMA_URL = "https://gamma-api.polymarket.com"
 CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
-console = Console()
+console = Console(legacy_windows=False)
 
 
 def _slug_window_start(slug: str) -> datetime | None:

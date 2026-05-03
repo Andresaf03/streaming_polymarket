@@ -38,6 +38,9 @@ metastore_db/
 # Kafka
 kafka-logs/
 
+# Local Windows Spark/Hadoop shims
+infra/hadoop/
+
 # Logs
 logs/
 *.log
