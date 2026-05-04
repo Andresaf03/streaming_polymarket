@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import pickle
 import warnings
 from pathlib import Path
 
@@ -244,8 +243,7 @@ def main() -> None:
     out_model = Path(args.model_out)
     out_features = Path(args.features_out)
     out_model.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_model, "wb") as fh:
-        pickle.dump(final_fit, fh)
+    final_fit.save(str(out_model))
     out_features.write_text(json.dumps(
         {
             "exog": EXOG,
