@@ -45,8 +45,10 @@ services:
           /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
             --create --if-not-exists --topic "$$t" --partitions 3 --replication-factor 1
         done
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
-          --create --if-not-exists --topic btc.forecast --partitions 1 --replication-factor 1
+        for t in btc.forecast btc.sarimax-forecast; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
+            --create --if-not-exists --topic "$$t" --partitions 1 --replication-factor 1
+        done
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
