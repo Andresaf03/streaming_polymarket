@@ -163,13 +163,17 @@ polymarket-producer --all                       # top-100 sin filtro
 
 Ambos producers tienen reconexión automática con backoff exponencial (1 s → 60 s cap, reset a 1 s si la conexión duró >30 s).
 
-### 3 — Spark Structured Streaming
+### 3 — Spark Structured Streaming + Live Scorer
 
 ```bash
 # Terminal C
 spark-stream                                   # solo Parquet + Kafka sinks
 spark-stream --console                         # también imprime stats en consola
 spark-stream --window "2 minutes" --watermark "1 minute"
+
+# Terminal D (requiere data/model.sarimax.pkl — ejecutar train-model primero)
+score-stream                                   # SARIMAX live → btc.sarimax-forecast
+score-stream --debug                           # verbose: muestra cada bar cerrado
 ```
 
 Spark escribe tres sinks en paralelo:
@@ -291,7 +295,8 @@ Consume los 3 topics de ingestión y reporta msg/s por topic, distribución de t
 | `binance.trades` | 3 | aggTrade (precio y cantidad de cada trade) |
 | `binance.book` | 3 | bookTicker (best bid/ask) + depth20 snapshots |
 | `stats.windowed` | 3 | Estadísticas por ventana: min/max/avg/var/n |
-| `btc.forecast` | 1 | BTC mid + P(up) + forecast implied por SARIMAX (1/s) |
+| `btc.forecast` | 1 | BTC mid + Polymarket-implied forecast (1/s, emitido por Spark) |
+| `btc.sarimax-forecast` | 1 | BTC mid + SARIMAX(2,0,2) predicted price (1/min, emitido por score_stream.py) |
 
 Todos los mensajes siguen el envelope canónico definido en `common/envelope.py`:
 
@@ -340,4 +345,33 @@ Activos disponibles: `btc`, `eth`, `sol`, `xrp`, `bnb`, `doge`, `hype`.
 - **SARIMAX vs LightGBM:** con ~700 rows de entrenamiento, LightGBM (IID, sin estructura temporal) sobreajusta. SARIMAX(p,0,q) modela autocorrelación AR+MA del retorno y usa Polymarket P(up) + volatilidad como exógenos — el fit correcto para esta escala.
 - **Walk-forward con append(refit=False):** refitear SARIMAX en cada paso del holdout toma 20+ min. `append(refit=False)` actualiza el estado del filtro de Kalman sin reoptimizar parámetros — estándar en producción, ~30 s total.
 - **Índice entero en SARIMAX:** `append()` requiere índice temporalmente contiguo; los snapshots tienen gaps por `dropna`. Se resetea a índice entero antes de pasar a statsmodels.
-- **σ_log en feature_list.json:** el scorer futuro (`score_stream.py`) necesita σ para reproducir `implied_target = BTC_mid + (2·P_up − 1) · σ` sin reentrenar.
+- **σ_log en feature_list.json:** `score_stream.py` lo usa para reportar el log-return en bps junto al forecast de precio.
+- **btc.sarimax-forecast:** topic nuevo de 1 partición emitido por `score_stream.py`. Schema: `{ts, btc_mid, poly_prob, log_return_pred, sarimax_forecast, sigma_log}`. Cold start: primeras ~10 min sin forecasts mientras acumula historia.
+- **train_model.py usa `final_fit.save()`:** formato statsmodels nativo. Compatible con archivos generados por versiones anteriores del script — `sm.load()` y `pickle.load()` leen el mismo formato.
+
+---
+
+## Comparación de arquitecturas (Fase 6)
+
+| | Mac M-series (CPU) | Windows RTX 2060 (GPU) |
+|---|---|---|
+| Spark mode | `local[*]` | `local[*]` (mismo código) |
+| ML inference | statsmodels SARIMAX + 3 exog | cuML ARIMA (endogenous-only) |
+| ML training | statsmodels (~30 s) | cuML ARIMA en GPU |
+| Entorno | macOS · .venv | Windows + WSL2 + conda RAPIDS 24.x |
+
+```bash
+# CPU (Mac) — sin dependencias extra
+python scripts/benchmark_inference.py
+
+# GPU (Windows WSL2) — requiere RAPIDS
+conda install -c rapidsai -c conda-forge -c nvidia rapids=24.10 python=3.11 cuda-version=12.0
+python scripts/benchmark_inference.py --gpu
+
+# GPU training comparison
+python modeling/train_model_cuml.py
+```
+
+> **Limitación cuML**: RAPIDS cuML ARIMA (24.x) no soporta exógenos. La comparación mide
+> la diferencia de hardware *y* metodológica (SARIMAX+exog vs ARIMA puro). Ver
+> `docs/phase-6-report.md` para el análisis completo.
