@@ -356,22 +356,22 @@ Activos disponibles: `btc`, `eth`, `sol`, `xrp`, `bnb`, `doge`, `hype`.
 | | Mac M-series (CPU) | Windows RTX 2060 (GPU) |
 |---|---|---|
 | Spark mode | `local[*]` | `local[*]` (mismo código) |
-| ML inference | statsmodels SARIMAX + 3 exog | cuML ARIMA (endogenous-only) |
-| ML training | statsmodels (~30 s) | cuML ARIMA en GPU |
+| ML inference | statsmodels SARIMAX + 3 exog | cuML ARIMA + 3 exog |
+| ML training | statsmodels (~30 s) | cuML ARIMA + 3 exog en GPU |
 | Entorno | macOS · .venv | Windows + WSL2 + conda RAPIDS 24.x |
 
 ```bash
 # CPU (Mac) — sin dependencias extra
 python scripts/benchmark_inference.py
 
-# GPU (Windows WSL2) — requiere RAPIDS
-conda install -c rapidsai -c conda-forge -c nvidia rapids=24.10 python=3.11 cuda-version=12.0
+# GPU (Windows WSL2) — requiere RAPIDS/cuML con ARIMA exógeno.
+# Genera el comando exacto para tu driver/CUDA en: https://docs.rapids.ai/install/
 python scripts/benchmark_inference.py --gpu
 
 # GPU training comparison
 python modeling/train_model_cuml.py
 ```
 
-> **Limitación cuML**: RAPIDS cuML ARIMA (24.x) no soporta exógenos. La comparación mide
-> la diferencia de hardware *y* metodológica (SARIMAX+exog vs ARIMA puro). Ver
-> `docs/phase-6-report.md` para el análisis completo.
+> **Nota cuML**: si `--gpu` falla indicando que `exog=` no está soportado, hay que
+> actualizar RAPIDS/cuML a una versión con ARIMA exógeno antes de usar los números
+> en el reporte. La comparación esperada usa la misma `y`, mismos exógenos y mismo orden.

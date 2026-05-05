@@ -1,22 +1,16 @@
 #!/usr/bin/env python3
 """
-train_model_cuml.py — GPU ARIMA training via RAPIDS cuML (Fase 6 comparison).
+train_model_cuml.py — GPU ARIMAX training via RAPIDS cuML (Fase 6 comparison).
 
-Trains an ARIMA(p, 0, q) model on the same training.parquet used by
-train_model.py, but using cuML on an NVIDIA GPU instead of statsmodels
-on CPU. Reports the same RMSE / MAE / dir_acc metrics for a direct
-side-by-side comparison.
-
-IMPORTANT — cuML ARIMA limitation:
-  cuML ARIMA (RAPIDS 24.x) does not support exogenous regressors (ARIMAX/SARIMAX).
-  This script benchmarks an endogenous-only ARIMA, which is methodologically
-  different from the CPU model (SARIMAX + 3 exog). The gap in holdout metrics
-  between the two backends reflects both the hardware difference AND the exog
-  contribution. Both differences are documented in docs/phase-6-report.md.
+Trains an ARIMA(p, 0, q) model with the same exogenous regressors used by
+train_model.py, but using cuML on an NVIDIA GPU instead of statsmodels on CPU.
+Reports the same RMSE / MAE / dir_acc metrics for a direct side-by-side
+comparison.
 
 Setup (Windows WSL2 with RTX 2060):
-  conda create -n rapids -c rapidsai -c conda-forge -c nvidia \
-      rapids=24.10 python=3.11 cuda-version=12.0
+  # Use the RAPIDS release selector to generate the exact WSL2/Conda command.
+  # Choose a cuML version where cuml.tsa.ARIMA accepts exog= in both the
+  # constructor and forecast().
   conda activate rapids
   # Copy training.parquet to the WSL2 environment and run this script.
 
@@ -39,6 +33,11 @@ import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 TARGET_COL = "log_return_5m"
+EXOG_COLS = ["poly_p_up", "poly_p_up_change_5m", "btc_volatility_5m"]
+
+
+def scalar(value) -> float:
+    return float(np.asarray(value).reshape(-1)[0])
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +61,12 @@ def report(name: str, y_true: np.ndarray, y_pred: np.ndarray) -> None:
 # AIC grid search (cuML)
 # ---------------------------------------------------------------------------
 
-def select_order_cuml(y_train: np.ndarray, max_p: int, max_q: int) -> tuple[int, int, int]:
+def select_order_cuml(
+    y_train: np.ndarray,
+    X_train: np.ndarray,
+    max_p: int,
+    max_q: int,
+) -> tuple[int, int, int]:
     from cuml.tsa.arima import ARIMA as CuMLARIMA
 
     print(f"\nAIC grid over p, q ∈ {{0..{max_p}}} × {{0..{max_q}}} (GPU):")
@@ -72,11 +76,22 @@ def select_order_cuml(y_train: np.ndarray, max_p: int, max_q: int) -> tuple[int,
             if p == 0 and q == 0:
                 continue
             try:
-                m = CuMLARIMA(y_train, order=(p, 0, q), fit_intercept=True, output_type="numpy")
+                m = CuMLARIMA(
+                    y_train,
+                    exog=X_train,
+                    order=(p, 0, q),
+                    fit_intercept=True,
+                    output_type="numpy",
+                )
                 m.fit()
-                aic = float(m.aic)
+                aic = scalar(m.aic)
                 candidates.append({"order": (p, 0, q), "aic": aic})
                 print(f"  ({p},0,{q})  AIC={aic:.2f}")
+            except TypeError as exc:
+                raise SystemExit(
+                    "This cuML build does not accept exog= for ARIMA. Install a RAPIDS "
+                    "version with ARIMA exogenous-regressor support before using this script."
+                ) from exc
             except Exception as exc:
                 print(f"  ({p},0,{q})  failed: {type(exc).__name__}")
 
@@ -94,25 +109,45 @@ def select_order_cuml(y_train: np.ndarray, max_p: int, max_q: int) -> tuple[int,
 
 def walk_forward_cuml(
     y_train: np.ndarray,
+    X_train: np.ndarray,
     y_ho: np.ndarray,
+    X_ho: np.ndarray,
     order: tuple,
 ) -> np.ndarray:
     from cuml.tsa.arima import ARIMA as CuMLARIMA
 
     print(f"\nGPU walk-forward over {len(y_ho)} holdout rows…")
     preds: list[float] = []
+    forecast_failures = 0
     # cuML does not support stateful append() — refit on growing window
     for i in range(len(y_ho)):
-        window = np.concatenate([y_train, y_ho[:i]])
+        y_window = np.concatenate([y_train, y_ho[:i]])
+        X_window = np.vstack([X_train, X_ho[:i]])
         try:
-            m = CuMLARIMA(window, order=order, fit_intercept=True, output_type="numpy")
+            m = CuMLARIMA(
+                y_window,
+                exog=X_window,
+                order=order,
+                fit_intercept=True,
+                output_type="numpy",
+            )
             m.fit()
-            fc = m.forecast(nsteps=1)
-            preds.append(float(fc[0]))
-        except Exception:
+            fc = m.forecast(nsteps=1, exog=X_ho[i:i + 1])
+            preds.append(scalar(fc))
+        except TypeError as exc:
+            raise SystemExit(
+                "This cuML build does not accept exog= for ARIMA. Install a RAPIDS "
+                "version with ARIMA exogenous-regressor support before using this script."
+            ) from exc
+        except Exception as exc:
+            if forecast_failures < 3:
+                print(f"  step {i} forecast: {type(exc).__name__}: {exc}")
+            forecast_failures += 1
             preds.append(0.0)
         if (i + 1) % 20 == 0:
             print(f"  step {i + 1}/{len(y_ho)}")
+    if forecast_failures:
+        print(f"  forecast failed on {forecast_failures}/{len(y_ho)} steps (used 0.0 fallback)")
     return np.array(preds)
 
 
@@ -121,7 +156,7 @@ def walk_forward_cuml(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="GPU cuML ARIMA training (Fase 6 comparison)")
+    parser = argparse.ArgumentParser(description="GPU cuML ARIMAX training (Fase 6 comparison)")
     parser.add_argument("--training-path", default="data/training.parquet")
     parser.add_argument("--features-out", default="data/feature_list_cuml.json")
     parser.add_argument("--holdout-frac", type=float, default=0.2)
@@ -133,7 +168,8 @@ def main() -> None:
         from cuml.tsa.arima import ARIMA as CuMLARIMA  # noqa: F401
     except ImportError:
         print("cuML not found. Install RAPIDS:")
-        print("  conda install -c rapidsai -c conda-forge -c nvidia rapids=24.10 python=3.11 cuda-version=12.0")
+        print("  Generate the WSL2/Conda command with https://docs.rapids.ai/install/")
+        print("  Use a cuML build where cuml.tsa.ARIMA supports exog=.")
         raise SystemExit(1)
 
     training_path = Path(args.training_path)
@@ -143,19 +179,21 @@ def main() -> None:
 
     df = pd.read_parquet(training_path).sort_index().reset_index(drop=True)
     print(f"loaded {training_path}: {len(df):,} rows")
-    print("  Note: cuML ARIMA is endogenous-only — exog columns not used")
+    print(f"  exog: {EXOG_COLS}")
 
     y = df[TARGET_COL].values.astype(np.float64)
+    X = df[EXOG_COLS].values.astype(np.float64)
     cutoff = int(len(y) * (1 - args.holdout_frac))
     y_tr, y_ho = y[:cutoff], y[cutoff:]
+    X_tr, X_ho = X[:cutoff], X[cutoff:]
     print(f"  train: {len(y_tr):,}  holdout: {len(y_ho):,}")
 
     t_select = time.perf_counter()
-    best_order = select_order_cuml(y_tr, args.max_p, args.max_q)
+    best_order = select_order_cuml(y_tr, X_tr, args.max_p, args.max_q)
     print(f"  order selection: {(time.perf_counter() - t_select) * 1e3:.0f} ms")
 
     t_wf = time.perf_counter()
-    p_ho = walk_forward_cuml(y_tr, y_ho, best_order)
+    p_ho = walk_forward_cuml(y_tr, X_tr, y_ho, X_ho, best_order)
     print(f"  walk-forward: {(time.perf_counter() - t_wf) * 1e3:.0f} ms")
 
     sigma_log = float(y_tr.std())
@@ -164,7 +202,7 @@ def main() -> None:
 
     print(f"\nσ_log (train) = {sigma_log:.6f}  ({sigma_log * 10_000:.2f} bps)")
     print("\nmetrics  (lower RMSE/MAE is better; dir_acc > 50% means signal):")
-    report("cuML ARIMA · holdout (walk-fwd, GPU)", y_ho, p_ho)
+    report("cuML ARIMAX · holdout (walk-fwd, GPU)", y_ho, p_ho)
     if "poly_p_up" in df.columns:
         report("polymarket · holdout", y_ho, p_poly_ho)
     report("zero-baseline · holdout", y_ho, p_zero_ho)
@@ -173,9 +211,10 @@ def main() -> None:
     out.write_text(json.dumps(
         {
             "backend": "cuml",
+            "exog": EXOG_COLS,
             "order": list(best_order),
             "sigma_log": sigma_log,
-            "note": "endogenous-only ARIMA — exog not supported by cuML",
+            "note": "cuML ARIMA with exogenous regressors",
         },
         indent=2,
     ))

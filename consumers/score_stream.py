@@ -7,9 +7,9 @@ rolling 1-minute snapshot buffer, computes the same feature set as
 build_dataset.py, and emits 1-step-ahead price forecasts from the trained
 SARIMAX model every minute.
 
-Output topic btc.sarimax-forecast mirrors the schema of btc.forecast
-(emitted by spark_stream.py) so Grafana can plot a third line alongside
-actual BTC and Polymarket-implied.
+Output topic btc.sarimax-forecast keeps the same time/BTC/probability fields
+as btc.forecast and adds SARIMAX-specific prediction fields, so Grafana can
+plot a third line alongside actual BTC and Polymarket-implied.
 
 Requires: pip install -e ".[all]"  (needs statsmodels + aiokafka)
 
@@ -41,6 +41,7 @@ from common import KafkaSink
 INPUT_TOPICS = ["binance.book", "polymarket.events"]
 OUTPUT_TOPIC = "btc.sarimax-forecast"
 SLUG_PREFIX = "btc-updown-5m-"
+EXOG_COLS = ["poly_p_up", "poly_p_up_change_5m", "btc_volatility_5m"]
 
 console = Console(legacy_windows=False)
 
@@ -63,7 +64,7 @@ class FeatureState:
       btc_volatility_5m[T] = sample std of btc_return_5m[T-4 : T+1]
       poly_p_up_change_5m  = poly_p_up[T] - poly_p_up[T-5]
 
-    Needs 10 bars of history before the first exog vector can be emitted.
+    Needs 10 consecutive 1-minute bars before the first exog vector can be emitted.
     """
 
     def __init__(self) -> None:
@@ -107,10 +108,14 @@ class FeatureState:
         return True
 
     def compute_exog(self) -> list[float] | None:
-        """Return [poly_p_up, poly_p_up_change_5m, btc_volatility_5m] or None."""
+        """Return EXOG_COLS values or None."""
         if len(self.bars) < 10:
             return None
-        bars = list(self.bars)
+        bars = list(self.bars)[-10:]
+        for prev, curr in zip(bars, bars[1:]):
+            if abs((curr.ts - prev.ts) - 60.0) > 1e-6:
+                return None
+
         btc = [b.btc_mid for b in bars]
         poly = [b.poly_p_up for b in bars]
 
@@ -132,6 +137,60 @@ class FeatureState:
         poly_5ago = poly[-6] if len(poly) >= 6 else poly[0]
 
         return [poly_now, poly_now - poly_5ago, vol]
+
+
+class LiveSarimax:
+    """Mutable SARIMAX wrapper for live walk-forward state updates.
+
+    The trained target is a 5-minute forward return. A bar at T only becomes a
+    realized training observation when bar T+5 arrives, so we keep the exog
+    vector for each forecast and append it once the target is known.
+    """
+
+    def __init__(self, model, horizon_bars: int = 5) -> None:
+        self.model = model
+        self.horizon_bars = horizon_bars
+        self.pending_exog: dict[float, list[float]] = {}
+        self.state_updates = 0
+        self.state_failures = 0
+
+    def remember_exog(self, bar_ts: float, exog: list[float]) -> None:
+        self.pending_exog[bar_ts] = exog
+        cutoff = bar_ts - 3600
+        for ts in [ts for ts in self.pending_exog if ts < cutoff]:
+            del self.pending_exog[ts]
+
+    def append_realized(self, bars: deque[MinuteBar], debug: bool) -> float | None:
+        if len(bars) <= self.horizon_bars:
+            return None
+
+        current = bars[-1]
+        origin = bars[-(self.horizon_bars + 1)]
+        exog = self.pending_exog.pop(origin.ts, None)
+        if exog is None:
+            return None
+        if abs((current.ts - origin.ts) - self.horizon_bars * 60.0) > 1e-6:
+            return None
+
+        if origin.btc_mid <= 0 or current.btc_mid <= 0:
+            realized = 0.0
+        else:
+            realized = math.log(current.btc_mid / origin.btc_mid)
+
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                self.model = self.model.append([realized], exog=[exog], refit=False)
+            self.state_updates += 1
+            return realized
+        except Exception as exc:
+            self.state_failures += 1
+            if self.state_failures <= 3 or debug:
+                console.print(f"[red]state update error: {type(exc).__name__}: {exc}[/red]")
+            return None
+
+    def forecast(self, exog: list[float]) -> float:
+        return float(self.model.forecast(steps=1, exog=[exog]).iloc[0])
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +232,7 @@ def extract_poly_p_up(msg: dict) -> float | None:
 
 async def score_loop(
     bootstrap: str,
-    model,
+    live_model: LiveSarimax,
     sigma_log: float,
     state: FeatureState,
     sink: KafkaSink,
@@ -191,6 +250,7 @@ async def score_loop(
 
     msg_count = 0
     forecast_count = 0
+    forecast_failures = 0
     try:
         async for record in consumer:
             msg = record.value
@@ -211,6 +271,7 @@ async def score_loop(
             if not state.maybe_close_bar(ts):
                 continue
 
+            realized = live_model.append_realized(state.bars, debug)
             exog = state.compute_exog()
             if exog is None:
                 if debug:
@@ -220,18 +281,19 @@ async def score_loop(
             btc_mid = state.bars[-1].btc_mid
             poly_prob = state.bars[-1].poly_p_up
             bar_ts = state.bars[-1].ts
+            live_model.remember_exog(bar_ts, exog)
 
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    log_ret = float(model.forecast(steps=1, exog=[exog]).iloc[0])
+                    log_ret = live_model.forecast(exog)
             except Exception as exc:
-                if debug:
+                forecast_failures += 1
+                if forecast_failures <= 3 or debug:
                     console.print(f"[red]forecast error: {type(exc).__name__}: {exc}[/red]")
                 continue
 
-            # btc_mid * (1 + log_return) ≈ btc_mid * exp(log_return) for small returns
-            sarimax_forecast = btc_mid * (1.0 + log_ret)
+            sarimax_forecast = btc_mid * math.exp(log_ret)
 
             await sink.send(
                 OUTPUT_TOPIC,
@@ -253,7 +315,10 @@ async def score_loop(
                 f"forecast={sarimax_forecast:>10,.2f}  "
                 f"Δ={log_ret * 10_000:>+7.1f} bps  "
                 f"P(up)={poly_prob:.3f}  "
-                f"[dim]msgs={msg_count:,} forecasts={forecast_count}[/dim]"
+                f"[dim]msgs={msg_count:,} forecasts={forecast_count} "
+                f"updates={live_model.state_updates}"
+                f"{f' update_failures={live_model.state_failures}' if live_model.state_failures else ''}"
+                f"{f' realized={realized * 10_000:+.1f}bps' if realized is not None else ''}[/dim]"
             )
 
     finally:
@@ -262,13 +327,14 @@ async def score_loop(
 
 async def _run(bootstrap: str, model, sigma_log: float, debug: bool) -> None:
     state = FeatureState()
+    live_model = LiveSarimax(model)
     backoff = 1.0
     async with KafkaSink(bootstrap) as sink:
         console.print(f"[green]Kafka → {bootstrap}[/green]")
         while True:
             t0 = time.monotonic()
             try:
-                await score_loop(bootstrap, model, sigma_log, state, sink, debug)
+                await score_loop(bootstrap, live_model, sigma_log, state, sink, debug)
                 uptime = time.monotonic() - t0
                 console.print(f"[yellow]consumer closed after {uptime:.0f}s[/yellow]")
             except Exception as exc:
@@ -302,6 +368,12 @@ def main() -> None:
     console.print(f"[cyan]Loading model from {model_path}…[/cyan]")
     model = sm.load(str(model_path))
     meta = json.loads(Path(args.features).read_text())
+    if meta.get("exog") != EXOG_COLS:
+        console.print(
+            f"[red]Feature mismatch: model expects {meta.get('exog')}, "
+            f"scorer computes {EXOG_COLS}[/red]"
+        )
+        raise SystemExit(1)
     sigma_log = meta["sigma_log"]
     order = tuple(meta["order"])
     console.print(f"[green]SARIMAX{order}  σ_log={sigma_log * 10_000:.2f} bps[/green]")

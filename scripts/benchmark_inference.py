@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-benchmark_inference.py — CPU vs GPU inference latency for SARIMAX / cuML ARIMA.
+benchmark_inference.py — CPU vs GPU inference latency for SARIMAX / cuML ARIMAX.
 
 Runs N 1-step-ahead forecasts on both backends and reports p50/p95/p99 latency
 per prediction. Designed for the Fase 6 CPU (Mac) vs GPU (Windows RTX 2060)
 architecture comparison.
 
-CPU backend : statsmodels SARIMAX  — standard, always available
-GPU backend : cuml.tsa.ARIMA       — requires RAPIDS (conda install -c rapidsai cuml)
-                                     Run on Windows with WSL2 + nvidia-container-toolkit
+CPU backend : statsmodels SARIMAX      — standard, always available
+GPU backend : cuml.tsa.ARIMA + exog    — requires a RAPIDS/cuML build with exog support
+                                         Run on Windows with WSL2 + NVIDIA drivers
 
 Usage:
     # CPU only (no RAPIDS needed)
@@ -32,10 +32,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import statsmodels.api as sm
 
 EXOG_COLS = ["poly_p_up", "poly_p_up_change_5m", "btc_volatility_5m"]
 TARGET_COL = "log_return_5m"
+
+
+def scalar(value) -> float:
+    return float(np.asarray(value).reshape(-1)[0])
 
 
 # ---------------------------------------------------------------------------
@@ -103,38 +106,47 @@ def benchmark_cpu(y: pd.Series, X: pd.DataFrame, n: int, order: tuple) -> list[f
 
 
 # ---------------------------------------------------------------------------
-# GPU benchmark — cuML ARIMA (RAPIDS)
+# GPU benchmark — cuML ARIMAX (RAPIDS)
 # ---------------------------------------------------------------------------
 
 def benchmark_gpu(y: pd.Series, X: pd.DataFrame, n: int, order: tuple) -> list[float]:
-    """Time N 1-step-ahead forecasts using cuML ARIMA on GPU.
-
-    cuML ARIMA (as of RAPIDS 24.x) does not support exogenous regressors.
-    We benchmark an ARIMA(p, 0, q) on the endogenous series only, which
-    isolates the GPU speedup on AR/MA computation — the same core operation
-    as SARIMAX minus the exog linear term.
-
-    This is documented as a limitation in docs/phase-6-report.md.
-    """
+    """Time N 1-step-ahead forecasts using cuML ARIMA with exogenous features."""
     try:
         from cuml.tsa.arima import ARIMA as CuMLARIMA
     except ImportError:
-        print("\n[GPU] cuml not found — install RAPIDS: conda install -c rapidsai cuml")
+        print(
+            "\n[GPU] cuml not found — install RAPIDS/cuML with the release selector "
+            "and a build where cuml.tsa.ARIMA supports exog=."
+        )
         return []
 
     p, d, q = order
-    print(f"\nGPU — fitting cuML ARIMA({p},{d},{q}) on {len(y)} training rows…")
+    print(f"\nGPU — fitting cuML ARIMAX({p},{d},{q}) on {len(y)} training rows…")
     y_gpu = y.values.astype(np.float64)
+    X_gpu = X.values.astype(np.float64)
+    exog_row = X.iloc[[-1]].values.astype(np.float64)
 
     t_fit = time.perf_counter()
-    gpu_model = CuMLARIMA(y_gpu, order=(p, d, q), fit_intercept=True, output_type="numpy")
+    try:
+        gpu_model = CuMLARIMA(
+            y_gpu,
+            exog=X_gpu,
+            order=(p, d, q),
+            fit_intercept=True,
+            output_type="numpy",
+        )
+    except TypeError as exc:
+        raise SystemExit(
+            "This cuML build does not accept exog= for ARIMA. Install a RAPIDS "
+            "version with ARIMA exogenous-regressor support before using --gpu."
+        ) from exc
     gpu_model.fit()
     print(f"  fit done in {(time.perf_counter() - t_fit) * 1e3:.1f} ms. Running {n} forecast() calls…")
 
     latencies: list[float] = []
     for _ in range(n):
         t0 = time.perf_counter()
-        gpu_model.forecast(nsteps=1)
+        scalar(gpu_model.forecast(nsteps=1, exog=exog_row))
         latencies.append((time.perf_counter() - t0) * 1e6)
 
     return latencies
@@ -164,11 +176,24 @@ def compare_training_time(y: pd.Series, X: pd.DataFrame, order: tuple, use_gpu: 
             from cuml.tsa.arima import ARIMA as CuMLARIMA
             p, d, q = order
             y_gpu = y.values.astype(np.float64)
+            X_gpu = X.values.astype(np.float64)
             t0 = time.perf_counter()
-            gpu_m = CuMLARIMA(y_gpu, order=(p, d, q), fit_intercept=True, output_type="numpy")
+            try:
+                gpu_m = CuMLARIMA(
+                    y_gpu,
+                    exog=X_gpu,
+                    order=(p, d, q),
+                    fit_intercept=True,
+                    output_type="numpy",
+                )
+            except TypeError as exc:
+                raise SystemExit(
+                    "This cuML build does not accept exog= for ARIMA. Install a RAPIDS "
+                    "version with ARIMA exogenous-regressor support before using --gpu."
+                ) from exc
             gpu_m.fit()
             gpu_ms = (time.perf_counter() - t0) * 1e3
-            print(f"  GPU cuML ARIMA({p},{d},{q})          : {gpu_ms:>8.1f} ms")
+            print(f"  GPU cuML ARIMAX({p},{d},{q})         : {gpu_ms:>8.1f} ms")
             print(f"  speedup (train)              : {cpu_ms / gpu_ms:>8.2f}×")
         except ImportError:
             print("  GPU cuml not available")
@@ -192,6 +217,8 @@ def main() -> None:
         raise SystemExit(1)
 
     meta = json.loads(Path(args.features).read_text())
+    if meta.get("exog") != EXOG_COLS:
+        raise SystemExit(f"Feature mismatch: metadata has {meta.get('exog')}, benchmark uses {EXOG_COLS}")
     order = tuple(meta["order"])
 
     print(f"Loading {training_path}…")
@@ -205,21 +232,21 @@ def main() -> None:
 
     if args.gpu:
         gpu_lat = benchmark_gpu(y, X, args.n, order)
-        if gpu_lat:
-            print_latency_table("GPU — cuML ARIMA (1-step forecast, no exog)", gpu_lat)
-            cpu_mean = statistics.mean(cpu_lat)
-            gpu_mean = statistics.mean(gpu_lat)
-            print(f"\n  inference speedup (mean): {cpu_mean / gpu_mean:.2f}×  "
-                  f"({'GPU faster' if gpu_mean < cpu_mean else 'CPU faster — GPU overhead dominates at this scale'})")
+        if not gpu_lat:
+            raise SystemExit("GPU benchmark requested but did not run.")
+
+        print_latency_table("GPU — cuML ARIMAX (1-step forecast)", gpu_lat)
+        cpu_mean = statistics.mean(cpu_lat)
+        gpu_mean = statistics.mean(gpu_lat)
+        print(f"\n  inference speedup (mean): {cpu_mean / gpu_mean:.2f}×  "
+              f"({'GPU faster' if gpu_mean < cpu_mean else 'CPU faster — GPU overhead dominates at this scale'})")
 
     print(f"\n{'─' * 55}")
     print("  Methodology note:")
-    print("    CPU: statsmodels SARIMAX — fit once + append(refit=False) per step  [O(n)]")
-    print("    GPU: cuML ARIMA          — refit on growing window per step         [O(n²)]")
-    print("  The GPU walk-forward is slower partly due to methodology, not hardware.")
-    print("  Inference latency (model.forecast / m.forecast) is the fair comparison.")
-    print("  cuML ARIMA also omits exog regressors (RAPIDS 24.x limitation).")
-    print("  See docs/phase-6-report.md for the full breakdown.")
+    print("    CPU: statsmodels SARIMAX — same y, same exog, same ARIMA order")
+    print("    GPU: cuML ARIMA + exog   — same y, same exog, same ARIMA order")
+    print("  Both latency rows fit once, then time repeated 1-step forecast() calls.")
+    print("  Copy these results to docs/phase-6-report.md for the full breakdown.")
     print(f"{'─' * 55}\n")
 
 

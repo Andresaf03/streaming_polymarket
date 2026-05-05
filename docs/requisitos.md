@@ -1,6 +1,6 @@
 # Requisitos del proyecto — estado actual
 
-**Curso:** Arquitectura de Grandes Volúmenes de Datos — ITAM 2026  
+**Curso:** Arquitectura de Grandes Volúmenes de Datos — ITAM 2026
 **Profesor:** Wilmer Efrén Pereira González
 
 ---
@@ -87,7 +87,7 @@
 | OS | macOS | Windows 11 + WSL2 |
 | Spark mode | `local[*]` | `local[*]` |
 | Kafka | Docker local | Docker local |
-| ML inference | statsmodels SARIMAX (CPU) | cuML ARIMA (GPU) |
+| ML inference | statsmodels SARIMAX + 3 exog (CPU) | cuML ARIMA + 3 exog (GPU) |
 | Benchmark | `benchmark_inference.py` | `benchmark_inference.py --gpu` |
 
 ---
