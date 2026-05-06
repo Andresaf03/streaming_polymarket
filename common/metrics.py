@@ -23,6 +23,8 @@ class RateTracker:
         self._counts: dict[str, int] = defaultdict(int)
         self._total = 0
         self._start = time.monotonic()
+        self._last_mark_total = 0
+        self._last_mark_time = self._start
 
     def record(self, label: str | None = None) -> None:
         self._times.append(time.monotonic())
@@ -50,3 +52,12 @@ class RateTracker:
     def avg_rate(self) -> float:
         elapsed = self.elapsed
         return self._total / elapsed if elapsed > 0 else 0.0
+
+    def interval_rate(self) -> float:
+        """Average msg/s since the previous interval_rate() call."""
+        now = time.monotonic()
+        elapsed = now - self._last_mark_time
+        delta = self._total - self._last_mark_total
+        self._last_mark_time = now
+        self._last_mark_total = self._total
+        return delta / elapsed if elapsed > 0 else 0.0

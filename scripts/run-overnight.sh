@@ -24,7 +24,7 @@ until docker exec kafka /opt/kafka/bin/kafka-topics.sh \
   sleep 2
 done
 
-echo "→ launching producers + spark"
+echo "→ launching producers + spark + scorer"
 nohup "${VENV}/binance-producer" \
   > "${LOGDIR}/binance.log" 2>&1 &
 echo "binance=$!" >> "${PIDFILE}"
@@ -39,13 +39,22 @@ nohup "${VENV}/spark-stream" --sigma 50 \
   > "${LOGDIR}/spark.log" 2>&1 &
 echo "spark=$!" >> "${PIDFILE}"
 
+if [ -f "${ROOT}/data/model.sarimax.pkl" ]; then
+  nohup "${VENV}/score-stream" \
+    > "${LOGDIR}/scorer.log" 2>&1 &
+  echo "scorer=$!" >> "${PIDFILE}"
+  echo "  → score-stream started (model found)"
+else
+  echo "  → score-stream skipped (no model.sarimax.pkl — run train-model first)"
+fi
+
 echo "→ caffeinate (keep laptop awake)"
 nohup caffeinate -d > /dev/null 2>&1 &
 echo "caffeinate=$!" >> "${PIDFILE}"
 
 echo
 echo "Stack is running. Logs:"
-echo "  tail -f ${LOGDIR}/{binance,polymarket,spark}.log"
+echo "  tail -f ${LOGDIR}/{binance,polymarket,spark,scorer}.log"
 echo "Stop with:"
 echo "  ${ROOT}/scripts/stop-overnight.sh"
 echo

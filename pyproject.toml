@@ -40,6 +40,7 @@ throughput-probe = "tools.throughput_probe:main"
 spark-stream = "consumers.spark_stream:main"
 build-dataset = "modeling.build_dataset:main"
 train-model = "modeling.train_model:main"
+score-stream = "consumers.score_stream:main"
 
 [build-system]
 requires = ["hatchling"]

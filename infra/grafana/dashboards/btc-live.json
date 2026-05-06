@@ -12,7 +12,7 @@
       "type": "stat",
       "title": "BTC mid ($)",
       "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
-      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "thresholds"},
@@ -30,7 +30,7 @@
         "justifyMode": "auto"
       },
       "targets": [
-        {"refId": "A", "topicName": "btc.forecast", "partition": 0, "autoOffsetReset": "LATEST", "timestampMode": "Now"}
+        {"refId": "A", "topicName": "btc.forecast.clean", "partition": 0, "autoOffsetReset": "lastN", "lastN": 7200, "timestampMode": "message"}
       ],
       "transformations": [
         {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
@@ -38,7 +38,8 @@
           {"targetField": "ts", "destinationType": "time"},
           {"targetField": "btc_mid", "destinationType": "number"}
         ]}},
-        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "btc_mid"]}}}
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "btc_mid"]}}},
+        {"id": "sortBy", "options": {"fields": {}, "sort": [{"field": "ts", "desc": false}]}}
       ]
     },
     {
@@ -46,7 +47,7 @@
       "type": "stat",
       "title": "Poly P(up)",
       "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
-      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+      "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4},
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "thresholds"},
@@ -75,7 +76,7 @@
         "justifyMode": "auto"
       },
       "targets": [
-        {"refId": "A", "topicName": "btc.forecast", "partition": 0, "autoOffsetReset": "LATEST", "timestampMode": "Now"}
+        {"refId": "A", "topicName": "btc.forecast.clean", "partition": 0, "autoOffsetReset": "lastN", "lastN": 7200, "timestampMode": "message"}
       ],
       "transformations": [
         {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
@@ -83,15 +84,62 @@
           {"targetField": "ts", "destinationType": "time"},
           {"targetField": "poly_prob", "destinationType": "number"}
         ]}},
-        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "poly_prob"]}}}
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "poly_prob"]}}},
+        {"id": "sortBy", "options": {"fields": {}, "sort": [{"field": "ts", "desc": false}]}}
       ]
     },
     {
       "id": 3,
       "type": "stat",
+      "title": "SARIMAX P(up)",
+      "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
+      "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "orange", "value": 0.4},
+              {"color": "gray", "value": 0.5},
+              {"color": "blue", "value": 0.6},
+              {"color": "green", "value": 0.7}
+            ]
+          },
+          "unit": "percentunit",
+          "decimals": 3,
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": "/^sarimax_prob_up$/"},
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {"refId": "A", "topicName": "btc.sarimax-forecast.clean", "partition": 0, "autoOffsetReset": "lastN", "lastN": 7200, "timestampMode": "message"}
+      ],
+      "transformations": [
+        {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
+        {"id": "convertFieldType", "options": {"conversions": [
+          {"targetField": "ts", "destinationType": "time"},
+          {"targetField": "sarimax_prob_up", "destinationType": "number"}
+        ]}},
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "sarimax_prob_up"]}}},
+        {"id": "sortBy", "options": {"fields": {}, "sort": [{"field": "ts", "desc": false}]}}
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
       "title": "σ (5-min)",
       "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
-      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+      "gridPos": {"x": 12, "y": 0, "w": 4, "h": 4},
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "fixed", "fixedColor": "gray"},
@@ -108,7 +156,7 @@
         "justifyMode": "auto"
       },
       "targets": [
-        {"refId": "A", "topicName": "btc.forecast", "partition": 0, "autoOffsetReset": "LATEST", "timestampMode": "Now"}
+        {"refId": "A", "topicName": "btc.forecast.clean", "partition": 0, "autoOffsetReset": "lastN", "lastN": 7200, "timestampMode": "message"}
       ],
       "transformations": [
         {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
@@ -116,15 +164,16 @@
           {"targetField": "ts", "destinationType": "time"},
           {"targetField": "sigma", "destinationType": "number"}
         ]}},
-        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "sigma"]}}}
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "sigma"]}}},
+        {"id": "sortBy", "options": {"fields": {}, "sort": [{"field": "ts", "desc": false}]}}
       ]
     },
     {
-      "id": 4,
+      "id": 5,
       "type": "stat",
       "title": "Implied drift ($)",
       "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
-      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+      "gridPos": {"x": 16, "y": 0, "w": 4, "h": 4},
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "thresholds"},
@@ -149,7 +198,7 @@
         "justifyMode": "auto"
       },
       "targets": [
-        {"refId": "A", "topicName": "btc.forecast", "partition": 0, "autoOffsetReset": "LATEST", "timestampMode": "Now"}
+        {"refId": "A", "topicName": "btc.forecast.clean", "partition": 0, "autoOffsetReset": "lastN", "lastN": 7200, "timestampMode": "message"}
       ],
       "transformations": [
         {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
@@ -157,13 +206,56 @@
           {"targetField": "ts", "destinationType": "time"},
           {"targetField": "drift", "destinationType": "number"}
         ]}},
-        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "drift"]}}}
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "drift"]}}},
+        {"id": "sortBy", "options": {"fields": {}, "sort": [{"field": "ts", "desc": false}]}}
       ]
     },
     {
-      "id": 5,
+      "id": 6,
+      "type": "stat",
+      "title": "SARIMAX drift ($)",
+      "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
+      "gridPos": {"x": 20, "y": 0, "w": 4, "h": 4},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "gray", "value": -5},
+              {"color": "green", "value": 5}
+            ]
+          },
+          "unit": "currencyUSD",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": "/^sarimax_drift$/"},
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {"refId": "A", "topicName": "btc.sarimax-forecast.clean", "partition": 0, "autoOffsetReset": "lastN", "lastN": 7200, "timestampMode": "message"}
+      ],
+      "transformations": [
+        {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
+        {"id": "convertFieldType", "options": {"conversions": [
+          {"targetField": "ts", "destinationType": "time"},
+          {"targetField": "sarimax_drift", "destinationType": "number"}
+        ]}},
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "sarimax_drift"]}}},
+        {"id": "sortBy", "options": {"fields": {}, "sort": [{"field": "ts", "desc": false}]}}
+      ]
+    },
+    {
+      "id": 7,
       "type": "timeseries",
-      "title": "BTC mid (solid) · implied 5-min target (dotted)",
+      "title": "BTC mid vs 5-min target values (computed now)",
       "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
       "gridPos": {"x": 0, "y": 4, "w": 24, "h": 12},
       "fieldConfig": {
@@ -174,7 +266,7 @@
             "lineWidth": 2,
             "fillOpacity": 0,
             "gradientMode": "none",
-            "spanNulls": false,
+            "spanNulls": true,
             "showPoints": "never",
             "axisPlacement": "auto"
           },
@@ -187,7 +279,17 @@
             "properties": [
               {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [6, 6]}},
               {"id": "color", "value": {"mode": "fixed", "fixedColor": "semi-dark-blue"}},
-              {"id": "displayName", "value": "Implied 5-min target"}
+              {"id": "displayName", "value": "Polymarket target (now)"}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "sarimax_forecast"},
+            "properties": [
+              {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [2, 4]}},
+              {"id": "custom.lineWidth", "value": 3},
+              {"id": "custom.showPoints", "value": "auto"},
+              {"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}},
+              {"id": "displayName", "value": "SARIMAX target (now)"}
             ]
           },
           {
@@ -204,22 +306,25 @@
         "tooltip": {"mode": "multi", "sort": "none"}
       },
       "targets": [
-        {"refId": "A", "topicName": "btc.forecast", "partition": 0, "autoOffsetReset": "LATEST", "timestampMode": "Now"}
+        {"refId": "A", "topicName": "btc.forecast.clean", "partition": 0, "autoOffsetReset": "lastN", "lastN": 7200, "timestampMode": "message"},
+        {"refId": "B", "topicName": "btc.sarimax-forecast.clean", "partition": 0, "autoOffsetReset": "lastN", "lastN": 7200, "timestampMode": "message"}
       ],
       "transformations": [
         {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
         {"id": "convertFieldType", "options": {"conversions": [
           {"targetField": "ts", "destinationType": "time"},
           {"targetField": "btc_mid", "destinationType": "number"},
-          {"targetField": "forecast", "destinationType": "number"}
+          {"targetField": "forecast", "destinationType": "number"},
+          {"targetField": "sarimax_forecast", "destinationType": "number"}
         ]}},
-        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "btc_mid", "forecast"]}}}
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "btc_mid", "forecast", "sarimax_forecast"]}}},
+        {"id": "sortBy", "options": {"fields": {}, "sort": [{"field": "ts", "desc": false}]}}
       ]
     },
     {
-      "id": 6,
+      "id": 8,
       "type": "timeseries",
-      "title": "Polymarket P(up)",
+      "title": "P(up): Polymarket vs SARIMAX",
       "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
       "gridPos": {"x": 0, "y": 16, "w": 24, "h": 10},
       "fieldConfig": {
@@ -231,7 +336,7 @@
             "lineWidth": 2,
             "fillOpacity": 10,
             "gradientMode": "opacity",
-            "spanNulls": false,
+            "spanNulls": true,
             "showPoints": "never",
             "thresholdsStyle": {"mode": "line"}
           },
@@ -247,24 +352,97 @@
         "overrides": [
           {
             "matcher": {"id": "byName", "options": "poly_prob"},
-            "properties": [{"id": "displayName", "value": "P(up)"}]
+            "properties": [
+              {"id": "displayName", "value": "Polymarket P(up)"},
+              {"id": "color", "value": {"mode": "fixed", "fixedColor": "orange"}}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "sarimax_prob_up"},
+            "properties": [
+              {"id": "displayName", "value": "SARIMAX P(up)"},
+              {"id": "custom.lineWidth", "value": 3},
+              {"id": "custom.fillOpacity", "value": 0},
+              {"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}
+            ]
           }
         ]
       },
       "options": {
-        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": false},
-        "tooltip": {"mode": "single", "sort": "none"}
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
       },
       "targets": [
-        {"refId": "A", "topicName": "btc.forecast", "partition": 0, "autoOffsetReset": "LATEST", "timestampMode": "Now"}
+        {"refId": "A", "topicName": "btc.forecast.clean", "partition": 0, "autoOffsetReset": "lastN", "lastN": 7200, "timestampMode": "message"},
+        {"refId": "B", "topicName": "btc.sarimax-forecast.clean", "partition": 0, "autoOffsetReset": "lastN", "lastN": 7200, "timestampMode": "message"}
       ],
       "transformations": [
         {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
         {"id": "convertFieldType", "options": {"conversions": [
           {"targetField": "ts", "destinationType": "time"},
-          {"targetField": "poly_prob", "destinationType": "number"}
+          {"targetField": "poly_prob", "destinationType": "number"},
+          {"targetField": "sarimax_prob_up", "destinationType": "number"}
         ]}},
-        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "poly_prob"]}}}
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "poly_prob", "sarimax_prob_up"]}}},
+        {"id": "sortBy", "options": {"fields": {}, "sort": [{"field": "ts", "desc": false}]}}
+      ]
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Multi-asset live stats",
+      "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
+      "gridPos": {"x": 0, "y": 26, "w": 24, "h": 8},
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
+          "decimals": 4
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "series"},
+            "properties": [{"id": "custom.width", "value": 130}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "asset"},
+            "properties": [{"id": "custom.width", "value": 70}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "n"},
+            "properties": [{"id": "custom.width", "value": 80}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "price_avg"},
+            "properties": [{"id": "custom.width", "value": 110}]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {"show": false, "reducer": ["sum"], "countRows": false, "fields": ""}
+      },
+      "targets": [
+        {"refId": "A", "topicName": "stats.windowed", "partition": 0, "autoOffsetReset": "LATEST", "timestampMode": "Now"},
+        {"refId": "B", "topicName": "stats.windowed", "partition": 1, "autoOffsetReset": "LATEST", "timestampMode": "Now"},
+        {"refId": "C", "topicName": "stats.windowed", "partition": 2, "autoOffsetReset": "LATEST", "timestampMode": "Now"}
+      ],
+      "transformations": [
+        {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
+        {"id": "convertFieldType", "options": {"conversions": [
+          {"targetField": "window_start", "destinationType": "time"},
+          {"targetField": "price_bucket", "destinationType": "number"},
+          {"targetField": "price_min", "destinationType": "number"},
+          {"targetField": "price_max", "destinationType": "number"},
+          {"targetField": "price_avg", "destinationType": "number"},
+          {"targetField": "price_var", "destinationType": "number"},
+          {"targetField": "n", "destinationType": "number"}
+        ]}},
+        {"id": "filterFieldsByName", "options": {"include": {"names": [
+          "window_start", "series", "asset", "source", "market_outcome", "price_bucket", "price_min",
+          "price_max", "price_avg", "price_var", "n"
+        ]}}},
+        {"id": "sortBy", "options": {"fields": {}, "sort": [{"field": "window_start", "desc": true}]}}
       ]
     }
   ],
@@ -273,11 +451,11 @@
   "style": "dark",
   "tags": ["btc", "polymarket", "live"],
   "templating": {"list": []},
-  "time": {"from": "now-30m", "to": "now"},
+  "time": {"from": "now-5m", "to": "now"},
   "timepicker": {"refresh_intervals": ["1s", "5s", "10s", "30s", "1m"]},
   "timezone": "utc",
   "title": "BTC × Polymarket live",
   "uid": "btc-live",
-  "version": 2,
+  "version": 5,
   "weekStart": ""
 }
