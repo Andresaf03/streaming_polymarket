@@ -24,7 +24,7 @@ from typing import Iterable
 import websockets
 from rich.console import Console
 
-from common import KafkaSink, RateTracker, envelope, log_progress, ssl_context
+from common import KafkaSink, NullSink, RateTracker, envelope, log_progress, ssl_context
 
 BINANCE_WS = "wss://stream.binance.com:9443/stream"
 DEFAULT_SYMBOLS = ["btcusdt", "ethusdt", "solusdt"]
@@ -116,7 +116,7 @@ async def _stream_with_reconnect(
 
 
 async def run(
-    bootstrap: str, symbols: list[str], streams: list[str], debug: bool
+    bootstrap: str, symbols: list[str], streams: list[str], debug: bool, dry_run: bool
 ) -> None:
     url = build_stream_url(symbols, streams)
     log_every = 50 if debug else 1000
@@ -125,6 +125,11 @@ async def run(
     console.print(f"[dim]{url[:160]}{'…' if len(url) > 160 else ''}[/dim]")
 
     tracker = RateTracker()
+    if dry_run:
+        console.print("[yellow]DRY RUN: reading WebSocket and parsing, not writing Kafka[/yellow]")
+        await _stream_with_reconnect(url, NullSink(), tracker, log_every)
+        return
+
     async with KafkaSink(bootstrap) as sink:
         console.print(f"[green]Kafka → {sink.bootstrap}[/green]")
         await _stream_with_reconnect(url, sink, tracker, log_every)
@@ -138,6 +143,11 @@ def main() -> None:
         "--kafka-bootstrap",
         default=os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092"),
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Read and parse the WebSocket stream without writing to Kafka",
+    )
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
@@ -148,6 +158,7 @@ def main() -> None:
                 symbols=[s.lower() for s in args.symbols],
                 streams=args.streams,
                 debug=args.debug,
+                dry_run=args.dry_run,
             )
         )
     except KeyboardInterrupt:

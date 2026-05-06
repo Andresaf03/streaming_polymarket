@@ -9,6 +9,7 @@ Discovery modes (mutually exclusive):
     --query KEYWORD        Top-N markets by volume filtered by keyword
     --all                  Top-100 markets by volume, no filter
     --asset btc            Rotating {asset}-updown-{window}m-* market
+    --assets btc eth sol   Multiple rotating up-or-down markets in one WS
       [--window 5|15]
 
 Usage:
@@ -31,7 +32,7 @@ import websockets
 from rich.console import Console
 from rich.rule import Rule
 
-from common import KafkaSink, RateTracker, envelope, log_progress, ssl_context
+from common import KafkaSink, NullSink, RateTracker, envelope, log_progress, ssl_context
 from producers.polymarket_discovery import (
     build_asset_map,
     fetch_top_markets,
@@ -40,6 +41,7 @@ from producers.polymarket_discovery import (
 
 CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 TOPIC = "polymarket.events"
+UPDOWN_ASSETS = ["btc", "eth", "sol", "xrp", "bnb", "doge", "hype"]
 WS_CONNECT_KWARGS: dict = {
     "ping_interval": 10,
     "ping_timeout": 15,
@@ -279,14 +281,112 @@ async def _run_rolling(
             console.print("[yellow]Window ended, rediscovering…[/yellow]")
 
 
+async def _discover_updown_assets(
+    session: aiohttp.ClientSession, assets: list[str], window: int
+) -> tuple[list[dict], list[str]]:
+    """Fetch the current rolling up/down market for each requested asset."""
+    results = await asyncio.gather(
+        *(fetch_updown_market(session, asset, window) for asset in assets),
+        return_exceptions=True,
+    )
+    markets: list[dict] = []
+    missing: list[str] = []
+    for asset, result in zip(assets, results):
+        if isinstance(result, Exception):
+            console.print(
+                f"[yellow]{asset}-updown-{window}m discovery failed: "
+                f"{type(result).__name__}: {result}[/yellow]"
+            )
+            missing.append(asset)
+            continue
+        market, is_live = result
+        if not market:
+            missing.append(asset)
+            continue
+        markets.append(market)
+        slug = market.get("slug", "")
+        status = "LIVE" if is_live else "waiting for open"
+        console.print(f"  [green]{asset.upper()}[/green] {slug} [dim]{status}[/dim]")
+    return markets, missing
+
+
+async def _run_rolling_multi(
+    args: argparse.Namespace,
+    sink: KafkaSink,
+    tracker: RateTracker,
+    log_every: int,
+) -> None:
+    """Rolling-market mode for several crypto up/down markets in one WS.
+
+    This is the throughput path that stays faithful to the project domain:
+    the subscribed Polymarket markets are the same asset family as the
+    Binance symbols used by the rest of the pipeline.
+    """
+    grace_seconds = 5.0
+    assets = [asset.lower() for asset in args.assets]
+    while True:
+        async with aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(ssl=ssl_context())
+        ) as session:
+            markets, missing = await _discover_updown_assets(session, assets, args.window)
+
+        if not markets:
+            console.print(
+                f"[yellow]No requested up/down markets found; retrying in 10s "
+                f"({', '.join(assets)})[/yellow]"
+            )
+            await asyncio.sleep(10)
+            continue
+        if missing:
+            console.print(
+                f"[yellow]Missing markets this cycle: {', '.join(missing)}[/yellow]"
+            )
+
+        asset_map = build_asset_map(markets)
+        deadlines = [
+            _slug_window_end(str(m.get("slug", "")), args.window) + grace_seconds
+            for m in markets
+        ]
+        deadline = min(deadlines)
+        console.print(
+            f"\n[cyan]Subscribing to {len(markets)} markets / "
+            f"{len(asset_map)} tokens; rediscovering in ~{deadline - time.time():.0f}s[/cyan]"
+        )
+
+        try:
+            await _stream_subscription(
+                asset_map, sink, tracker, log_every, deadline=deadline
+            )
+        except Exception as exc:
+            console.print(
+                f"[red]Stream error ({type(exc).__name__}): {exc}; retry in 5s[/red]"
+            )
+            await asyncio.sleep(5)
+        else:
+            console.print("[yellow]Window ended, rediscovering…[/yellow]")
+
+
 async def run(args: argparse.Namespace) -> None:
     console.print(Rule("[bold cyan]Polymarket CLOB → Kafka[/bold cyan]"))
     log_every = 50 if args.debug else 500
     tracker = RateTracker()
 
+    if args.dry_run:
+        console.print("[yellow]DRY RUN: reading WebSocket and parsing, not writing Kafka[/yellow]")
+        sink = NullSink()
+        if args.assets:
+            await _run_rolling_multi(args, sink, tracker, log_every)
+        elif args.asset:
+            await _run_rolling(args, sink, tracker, log_every)
+        else:
+            await _run_static(args, sink, tracker, log_every)
+        return
+
     async with KafkaSink(args.kafka_bootstrap) as sink:
         console.print(f"[green]Kafka → {sink.bootstrap}[/green]")
-        if args.asset:
+        if args.assets:
+            await _run_rolling_multi(args, sink, tracker, log_every)
+        elif args.asset:
             await _run_rolling(args, sink, tracker, log_every)
         else:
             await _run_static(args, sink, tracker, log_every)
@@ -299,8 +399,14 @@ def main() -> None:
     mode.add_argument("--all", action="store_true", help="Top-100 markets, no filter")
     mode.add_argument(
         "--asset",
-        choices=["btc", "eth", "sol", "xrp", "bnb", "doge", "hype"],
+        choices=UPDOWN_ASSETS,
         help="Asset for rotating up-or-down market",
+    )
+    mode.add_argument(
+        "--assets",
+        nargs="+",
+        choices=UPDOWN_ASSETS,
+        help="Multiple assets for rotating up-or-down markets in one WS",
     )
     parser.add_argument("--top", type=int, default=20, help="N when using --query or default")
     parser.add_argument("--window", type=int, default=5, choices=[5, 15], help="Window for --asset")
@@ -308,9 +414,14 @@ def main() -> None:
         "--kafka-bootstrap",
         default=os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092"),
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Read and parse the WebSocket stream without writing to Kafka",
+    )
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
-    if not args.asset and not args.query and not args.all:
+    if not args.asset and not args.assets and not args.query and not args.all:
         args.asset = "btc"
 
     try:
