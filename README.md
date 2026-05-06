@@ -170,16 +170,18 @@ Ambos producers tienen reconexión automática con backoff exponencial (1 s → 
 spark-stream                                   # solo Parquet + Kafka sinks
 spark-stream --console                         # también imprime stats en consola
 spark-stream --window "2 minutes" --watermark "1 minute"
+spark-stream --forecast-topic btc.forecast.live # topic limpio para Grafana
 
 # Terminal D (requiere data/model.sarimax.pkl — ejecutar train-model primero)
-score-stream                                   # SARIMAX live → btc.sarimax-forecast
+score-stream                                   # SARIMAX live → btc.sarimax-forecast.live
 score-stream --debug                           # verbose: muestra cada bar cerrado
+score-stream --strict-history --debug          # espera 10 min de features exactas
 ```
 
 Spark escribe tres sinks en paralelo:
 - **Parquet** en `data/ticks/` (particionado por `source/date/hour`)
 - **Kafka** topic `stats.windowed` (estadísticas por ventana — consumido por Grafana)
-- **Kafka** topic `btc.forecast` (BTC mid + Polymarket-implied price por segundo — consumido por Grafana)
+- **Kafka** topic `btc.forecast.live` (BTC mid + Polymarket-implied price por segundo — consumido por Grafana; evita mezclar datos viejos de `btc.forecast`)
 
 ### 4 — Recolección overnight (desatendida)
 
@@ -295,8 +297,10 @@ Consume los 3 topics de ingestión y reporta msg/s por topic, distribución de t
 | `binance.trades` | 3 | aggTrade (precio y cantidad de cada trade) |
 | `binance.book` | 3 | bookTicker (best bid/ask) + depth20 snapshots |
 | `stats.windowed` | 3 | Estadísticas por ventana: min/max/avg/var/n |
-| `btc.forecast` | 1 | BTC mid + Polymarket-implied forecast (1/s, emitido por Spark) |
-| `btc.sarimax-forecast` | 1 | BTC mid + SARIMAX(2,0,2) predicted price (1/min, emitido por score_stream.py) |
+| `btc.forecast` | 1 | Topic legado de forecast BTC; útil para compatibilidad, no para el dashboard limpio |
+| `btc.forecast.live` | 1 | BTC mid + Polymarket-implied forecast (1/s, emitido por Spark, consumido por Grafana) |
+| `btc.sarimax-forecast` | 1 | Topic legado SARIMAX; útil para compatibilidad, no para el dashboard limpio |
+| `btc.sarimax-forecast.live` | 1 | SARIMAX(2,0,2) live predicted price (1/s, emitido por score_stream.py, consumido por Grafana) |
 
 Todos los mensajes siguen el envelope canónico definido en `common/envelope.py`:
 
@@ -346,32 +350,53 @@ Activos disponibles: `btc`, `eth`, `sol`, `xrp`, `bnb`, `doge`, `hype`.
 - **Walk-forward con append(refit=False):** refitear SARIMAX en cada paso del holdout toma 20+ min. `append(refit=False)` actualiza el estado del filtro de Kalman sin reoptimizar parámetros — estándar en producción, ~30 s total.
 - **Índice entero en SARIMAX:** `append()` requiere índice temporalmente contiguo; los snapshots tienen gaps por `dropna`. Se resetea a índice entero antes de pasar a statsmodels.
 - **σ_log en feature_list.json:** `score_stream.py` lo usa para reportar el log-return en bps junto al forecast de precio.
-- **btc.sarimax-forecast:** topic nuevo de 1 partición emitido por `score_stream.py`. Schema: `{ts, btc_mid, poly_prob, log_return_pred, sarimax_forecast, sigma_log}`. Cold start: primeras ~10 min sin forecasts mientras acumula historia.
+- **btc.forecast.live:** topic de 1 partición para el dashboard. Ejecuta solo un `spark-stream` escribiendo aqui; si ves puntos duplicados, hay otro Spark vivo o estas leyendo un topic viejo.
+- **btc.sarimax-forecast.live:** topic nuevo de 1 partición emitido por `score_stream.py`. Schema: `{ts, ts_unix, target_ts, target_horizon_s, model, feature_mode, sarimax_input_btc_mid, sarimax_poly_prob, log_return_pred, sarimax_forecast, sarimax_drift, sarimax_prob_up, sigma_log}`. Emite cada 1 s con `feature_mode=warm`; pasa a `exact` cuando acumula historia completa.
 - **train_model.py usa `final_fit.save()`:** formato statsmodels nativo. Compatible con archivos generados por versiones anteriores del script — `sm.load()` y `pickle.load()` leen el mismo formato.
 
 ---
 
 ## Comparación de arquitecturas (Fase 6)
 
-| | Mac M-series (CPU) | Windows RTX 2060 (GPU) |
+La comparación principal para el reporte es Spark CPU vs Spark GPU con RAPIDS
+Accelerator for Apache Spark. El benchmark cuML queda como evidencia adicional
+de ML, no como sustituto de Spark UI.
+
+| | Spark CPU | Spark GPU · Windows RTX 2060 |
 |---|---|---|
-| Spark mode | `local[*]` | `local[*]` (mismo código) |
-| ML inference | statsmodels SARIMAX + 3 exog | cuML ARIMA + 3 exog |
-| ML training | statsmodels (~30 s) | cuML ARIMA + 3 exog en GPU |
-| Entorno | macOS · .venv | Windows + WSL2 + conda RAPIDS 24.x |
+| Spark mode | `local[*]` | `local[*]` + RAPIDS Accelerator |
+| Plugin Spark | ninguno | `com.nvidia.spark.SQLPlugin` |
+| Jar | Kafka connector | Kafka connector + `rapids-4-spark_2.12` |
+| Evidencia | Spark UI | Spark UI + planes `Gpu*` + `nvidia-smi` |
+| ML adicional | statsmodels SARIMAX | cuML ARIMA opcional |
 
 ```bash
-# CPU (Mac) — sin dependencias extra
+# Spark CPU
+spark-stream --master "local[*]" --console \
+  --output-path data/phase6/cpu \
+  --checkpoint-path data/checkpoints/phase6-cpu
+
+# Spark GPU (WSL2/Linux con driver NVIDIA visible por nvidia-smi)
+spark-stream --master "local[*]" --rapids --rapids-explain ALL --console \
+  --output-path data/phase6/gpu \
+  --checkpoint-path data/checkpoints/phase6-gpu
+
+# Evidencia ML opcional
 python scripts/benchmark_inference.py
-
-# GPU (Windows WSL2) — requiere RAPIDS/cuML con ARIMA exógeno.
-# Genera el comando exacto para tu driver/CUDA en: https://docs.rapids.ai/install/
 python scripts/benchmark_inference.py --gpu
-
-# GPU training comparison
 python modeling/train_model_cuml.py
 ```
 
-> **Nota cuML**: si `--gpu` falla indicando que `exog=` no está soportado, hay que
-> actualizar RAPIDS/cuML a una versión con ARIMA exógeno antes de usar los números
-> en el reporte. La comparación esperada usa la misma `y`, mismos exógenos y mismo orden.
+Guía paso a paso: `docs/windows-rtx2060-phase6-runbook.md`.
+
+Para medir throughput sin mezclar mercados ajenos al caso crypto Up-or-Down:
+
+```bash
+binance-producer --symbols btcusdt ethusdt solusdt xrpusdt bnbusdt --streams aggTrade bookTicker depth20@100ms
+polymarket-producer --assets btc eth sol xrp bnb --window 5
+throughput-probe --duration 60
+```
+
+Los logs de producers reportan `last1s` (ultimo segundo), `interval`
+(desde el ultimo log) y `avg` (promedio global). Usa `avg`/`throughput-probe`
+para el requisito de throughput sostenido.

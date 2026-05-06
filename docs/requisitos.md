@@ -15,9 +15,9 @@
 | 4 | Estadísticas en tiempo real: min, max, avg, varianza por rango de precio | ✅ | `windowed_stats()` → topic `stats.windowed` |
 | 5 | Guardar datos a disco para entrenamiento posterior | ✅ | Parquet sink → `data/ticks/` |
 | 6 | Modelo supervisado entrenado sobre datos acumulados | ✅ | SARIMAX(2,0,2) — `modeling/train_model.py` |
-| 7 | Scoring / clasificación en tiempo real (segunda tanda de streaming) | ✅ | `consumers/score_stream.py` → `btc.sarimax-forecast` |
+| 7 | Scoring / clasificación en tiempo real (segunda tanda de streaming) | ✅ | `consumers/score_stream.py` → `btc.sarimax-forecast.clean` |
 | 8 | Visualización animada de indicadores | ✅ | Grafana 11.3 — `http://localhost:3000` |
-| 9 | Comparación en ≥ 2 arquitecturas con Spark UI | 🔄 | Scripts listos — faltan capturas + reporte |
+| 9 | Comparación en ≥ 2 arquitecturas con Spark UI | 🔄 | CPU `spark-stream` vs GPU `spark-stream --rapids` — faltan capturas + reporte |
 | 10 | Tabla comparativa de hardware de cada arquitectura | ⬜ | Pendiente en `docs/phase-6-report.md` |
 | 11 | Capturas de pantalla Spark UI (Jobs, Stages, Streaming, Tasks) | ⬜ | Pendiente — correr en Mac + Windows |
 | 12 | Informe final (arquitecturas, datos, estadísticos, conclusiones) | ⬜ | Pendiente — `docs/phase-6-report.md` |
@@ -63,7 +63,7 @@
 - **Exigido:** PowerBI / Tableau / Qlik Sense (o equivalente)
 - **Implementado:** Grafana 11.3 con `hamedkarbasi93-kafka-datasource` plugin
   - Dashboard "BTC × Polymarket live" en `http://localhost:3000`
-  - Fuentes: topic `btc.forecast` (Polymarket-implied) + `btc.sarimax-forecast` (modelo)
+  - Fuentes: topic `btc.forecast.clean` (Polymarket-implied, limpio para dashboard) + `btc.sarimax-forecast.clean` (modelo)
 
 ### Comparación de arquitecturas (req. 9–11)
 - **Exigido:** misma aplicación en ≥ 2 plataformas, Spark UI, ≥ 2 métricas, tabla comparativa, capturas de pantalla
@@ -85,10 +85,11 @@
 | | Mac M-series (CPU) | Windows RTX 2060 (GPU) |
 |---|---|---|
 | OS | macOS | Windows 11 + WSL2 |
-| Spark mode | `local[*]` | `local[*]` |
+| Spark mode | `local[*]` CPU | `local[*]` + RAPIDS Accelerator for Apache Spark |
 | Kafka | Docker local | Docker local |
-| ML inference | statsmodels SARIMAX + 3 exog (CPU) | cuML ARIMA + 3 exog (GPU) |
-| Benchmark | `benchmark_inference.py` | `benchmark_inference.py --gpu` |
+| Spark acceleration | CPU Spark SQL/DataFrame engine | `com.nvidia.spark.SQLPlugin` + `rapids-4-spark_2.12` |
+| ML inference | statsmodels SARIMAX + 3 exog (CPU) | cuML ARIMA + 3 exog (GPU, evidencia adicional) |
+| Benchmark | `spark-stream` + Spark UI | `spark-stream --rapids` + Spark UI |
 
 ---
 
@@ -111,11 +112,15 @@ score-stream --debug
 # 2. Abrir Spark UI y tomar capturas en: Jobs, Stages, Streaming, Tasks
 open http://localhost:4040
 
-# 3. Correr benchmark de inferencia
+# 3. Correr Spark CPU y Spark GPU con la misma app
+spark-stream --console
+spark-stream --console --rapids --master "local[*]"
+
+# 4. Correr benchmark de inferencia como evidencia adicional
 python scripts/benchmark_inference.py          # Mac
 python scripts/benchmark_inference.py --gpu    # Windows
 
-# 4. Correr training comparison en GPU
+# 5. Correr training comparison en GPU
 python modeling/train_model_cuml.py            # Windows
 ```
 
