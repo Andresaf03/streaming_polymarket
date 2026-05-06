@@ -24,6 +24,7 @@ Fuentes oficiales para RAPIDS Spark:
 - `score-stream` consume `btc.forecast.clean` por default y reutiliza el `ts` exacto de Spark, para que SARIMAX quede alineado verticalmente con BTC/Polymarket. La opcion vieja `--ts-offset` ya no existe.
 - `spark-stream` vuelve a publicar filas parciales en `btc.forecast.clean`: si llega BTC pero no Polymarket en ese segundo, conserva `btc_mid` y rellena `poly_prob`/forecast/drift con el ultimo Polymarket valido durante `--poly-stale-after` segundos. Esto mantiene la curva BTC fluida y evita que Grafana pierda Polymarket al reconectar.
 - Grafana lee el forecast limpio desde `btc.forecast.clean` y SARIMAX desde `btc.sarimax-forecast.clean`; `btc.forecast.live`/`btc.sarimax-forecast.live` quedan como topics legados para no mezclar datos viejos o streams duplicados.
+- `score-stream` publica `btc.sarimax-forecast.clean` en `partition=0`. Esto importa porque el datasource Kafka de Grafana consulta una partición explícita; si el topic heredado tiene 3 particiones y el scorer cae en partición 2, el panel queda en `No data` aunque Kafka sí tenga mensajes.
 - Grafana refresca cada 1 s. Los paneles live leen los topics con `autoOffsetReset: "lastN"` y `lastN: 7200`, para que una reconexion/minimizado/reload reconstruya la historia reciente desde Kafka en vez de empezar a dibujar desde cero.
 - Grafana mantiene inferencia BTC y agrega tabla `Multi-asset live stats (stats.windowed)`.
 
@@ -120,6 +121,14 @@ Que debes ver:
 Notas para que el dashboard no se rompa:
 
 - Debe haber solo un `spark-stream` escribiendo a `btc.forecast.clean`. Si ves lineas dobles o puntos triangulados, casi seguro hay dos Spark vivos escribiendo forecast.
+- Debe haber un `score-stream` vivo escribiendo a `btc.sarimax-forecast.clean`. Si el panel SARIMAX queda en `No data`, revisa offsets por partición:
+
+```powershell
+docker exec kafka /opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server localhost:9092 --topic btc.forecast.clean
+docker exec kafka /opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server localhost:9092 --topic btc.sarimax-forecast.clean
+```
+
+  Grafana lee partición 0. Si ves SARIMAX creciendo solo en partición 1 o 2, estás corriendo una versión vieja del scorer; reinícialo con la versión que fuerza `partition=0`.
 - `Window ended, rediscovering...` en `polymarket-producer` es normal cada 5 minutos. El producer salta al siguiente mercado; mientras no haya update Polymarket, Spark sigue publicando BTC-only y usa el ultimo `poly_prob` valido hasta `--poly-stale-after` segundos. Si de verdad no vuelve Polymarket despues de esa ventana, la linea puede pausarse, pero no debe desaparecer lo ya dibujado.
 - Si alguna linea parece borrarse despues de un refresh, confirma que los targets live del dashboard usan `autoOffsetReset: "lastN"` con `lastN: 7200`, no `LATEST`/`EARLIEST`.
 - Si acabas de cambiar el dashboard, reinicia Grafana y espera la ventana visible actual para que salgan datos viejos del rango:
@@ -269,6 +278,27 @@ curl -L -o ~/spark-rapids/rapids-4-spark_2.12-26.04.0.jar \
 
 Mantén producers vivos y corre en WSL2.
 
+Para scoring SARIMAX desde WSL2 no necesitas calcular `WINDOWS_HOST` en esta
+configuración: Kafka anuncia `localhost:9092` en `docker-compose.yml`. Usa:
+
+```bash
+source .venv/bin/activate
+score-stream --kafka-bootstrap localhost:9092 --debug
+```
+
+Si usas la variable `WINDOWS_HOST`, créala dentro de bash/WSL, no en
+PowerShell:
+
+```bash
+WINDOWS_HOST=$(awk '/nameserver/ {print $2; exit}' /etc/resolv.conf)
+score-stream --kafka-bootstrap "$WINDOWS_HOST:9092" --debug
+```
+
+Si PowerShell muestra `The term 'WINDOWS_HOST=$(...)' is not recognized`, ese
+comando se ejecutó en la terminal equivocada. Ojo además: si arrancas Kafka con
+`KAFKA_ADVERTISED_LISTENERS=...EXTERNAL://localhost:9092`, preferir
+`localhost:9092` evita que el cliente reciba metadata inconsistente.
+
 Opcion Maven:
 
 ```bash
@@ -310,29 +340,31 @@ python modeling/train_model_cuml.py
 
 Si cuML no soporta `exog=` en tu version, no uses esos numeros; instala una version RAPIDS compatible o reporta que esa parte quedo no ejecutada.
 
-## 10. Tabla para `docs/phase-6-report.md`
+## 10. Tabla final para `docs/phase-6-report.md`
 
 | Metrica | Spark CPU | Spark GPU RAPIDS |
 |---|---:|---:|
-| OS | Windows 11 Pro 10.0.26200 | Windows 11 Pro + WSL2 Ubuntu |
-| CPU | pendiente | pendiente |
-| RAM | pendiente | pendiente |
+| OS | Windows 11 Pro 10.0.26200 | Windows 11 Pro + WSL2 Ubuntu 24.04 |
+| CPU | Intel Core i7-9700F | Intel Core i7-9700F |
+| RAM | 32 GB | 32 GB compartida |
 | GPU | N/A | NVIDIA RTX 2060 6 GB VRAM |
 | Driver / CUDA | N/A | 591.86 / CUDA 13.1 |
+| Spark version | 3.5.8 | 3.5.8 |
 | Spark mode | `local[*]` | `local[*]` + RAPIDS |
 | Plugin Spark | ninguno | `com.nvidia.spark.SQLPlugin` |
 | Kafka input | mismos topics | mismos topics |
 | Producers | mismos comandos | mismos comandos |
+| Duracion observada | 19 min 02 s | 25 min 40 s |
+| Active streaming queries | 4 | 4 |
+| Promedio input, 4 queries | 1,496.58 msg/s | 1,465.01 msg/s |
+| Mediana process, 4 queries | 1,637.01 msg/s | 1,392.09 msg/s |
+| Query input mas alto | 1,613.25 msg/s | 1,949.95 msg/s |
+| Estabilidad final | estable | estable |
 | Throughput probe avg | pendiente | pendiente |
-| Spark input rate | pendiente | pendiente |
-| Spark processing rate | pendiente | pendiente |
-| Batch duration p50/p95 | pendiente | pendiente |
-| Shuffle read/write | pendiente | pendiente |
-| Spill memory/disk | pendiente | pendiente |
-| Executor run time | pendiente | pendiente |
-| GC time | pendiente | pendiente |
-| Scheduler delay | pendiente | pendiente |
-| Evidencia GPU | N/A | `Gpu*` plan + `nvidia-smi` |
+| Evidencia GPU | N/A | Spark Environment + `Gpu*` plan + `nvidia-smi` |
+
+CSV fuente: `results/phase6_cpu_vs_gpu.csv`. Conclusión: GPU corre, pero CPU
+gana o empata para el dashboard live porque el workload es micro-batch + I/O.
 
 ## 11. Cierre
 

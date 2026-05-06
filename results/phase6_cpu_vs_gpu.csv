@@ -1,0 +1,41 @@
+metric,cpu,gpu,notes
+os,Windows 11 Pro 10.0.26200,Windows 11 Pro + WSL2 Ubuntu 24.04,
+gpu_hw,N/A,NVIDIA RTX 2060 6GB VRAM,
+driver_cuda,N/A,591.86 / CUDA 13.1,
+spark_version,3.5.8,3.5.8,
+spark_mode,local[*],local[*] + RAPIDS,
+spark_plugin,none,com.nvidia.spark.SQLPlugin,
+kafka_bootstrap,localhost:9092,localhost:9092,"Docker advertises EXTERNAL://localhost:9092"
+uptime_min,19.0,25.7,"Spark UI screenshots: CPU 2026-05-05 21:34 UTC; GPU 2026-05-06 06:02 UTC"
+active_streaming_queries,4,4,"Parquet + stats Kafka + forecast Kafka + console when --console is enabled"
+spark_ui_avg_input_query_1_msg_s,1243.50,1073.11,"Rows are kept in screenshot order because Spark UI names are <no name>"
+spark_ui_avg_process_query_1_msg_s,6066.96,1076.45,
+spark_ui_latest_batch_query_1,76,44,
+spark_ui_avg_input_query_2_msg_s,1609.69,1366.59,
+spark_ui_avg_process_query_2_msg_s,1637.53,1452.32,
+spark_ui_latest_batch_query_2,576,70,
+spark_ui_avg_input_query_3_msg_s,1613.25,1470.38,
+spark_ui_avg_process_query_3_msg_s,1636.49,1437.46,
+spark_ui_latest_batch_query_3,579,70,
+spark_ui_avg_input_query_4_msg_s,1519.86,1949.95,
+spark_ui_avg_process_query_4_msg_s,1527.75,1346.71,
+spark_ui_latest_batch_query_4,569,104,
+avg_input_across_queries_msg_s,1496.58,1465.01,
+median_process_across_queries_msg_s,1637.01,1392.09,"Median avoids the CPU console-sink outlier"
+representative_forecast_input_msg_s,1613.25,1470.38,"Inferred from the dashboard forecast query row; use per-query rows above as primary evidence"
+representative_forecast_process_msg_s,1636.49,1437.46,
+spark_gpu_stability,stable 19m,stable 25m40s,"Previous WSL2/RAPIDS crash was not reproduced after reset"
+spark_gpu_result,baseline,worse or equal,"GPU ran, but did not beat CPU on these low-latency micro-batches"
+grafana_sarimax_partition_issue,N/A,"fixed: score-stream now writes partition 0","Old topic had data on partition 2 while Grafana read partition 0"
+throughput_probe_avg_msg_s,TBD,TBD,"Run throughput-probe --duration 60 during the same measurement window"
+sarimax_training_ms,529.2,2561.6,"CPU statsmodels vs optional GPU cuML ARIMAX"
+sarimax_inference_mean_us,1487.2,5727.3,
+sarimax_inference_p50_us,1458.2,5595.4,
+sarimax_inference_p95_us,1647.6,6560.8,
+sarimax_inference_p99_us,1769.2,7248.2,
+sarimax_throughput_forecasts_s,672,175,
+sarimax_speedup_training,1.0x,0.14x,"GPU slower for one short series"
+sarimax_speedup_inference,1.0x,0.26x,"GPU overhead dominates at this scale"
+cuml_works_on_wsl2,N/A,yes,"Optional ML benchmark works, but does not feed Grafana"
+rapids_spark_works_on_wsl2,N/A,yes,"Observed final run had 4 active streaming queries"
+wsl_score_stream_command,N/A,"score-stream --kafka-bootstrap localhost:9092 --debug","Run this inside WSL bash, not PowerShell"

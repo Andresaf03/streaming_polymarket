@@ -1,4 +1,4 @@
-# Hallazgos RAPIDS Spark GPU — RTX 2060 / WSL2
+# Hallazgos RAPIDS Spark GPU - RTX 2060 / WSL2
 
 **Entorno:** NVIDIA RTX 2060 6 GB VRAM · Driver 591.86 · CUDA 13.1 · WSL2 Ubuntu 24.04 · RAPIDS 26.04.0 · Spark 3.5.8
 
@@ -6,80 +6,110 @@
 
 ## Resultado principal
 
-RAPIDS Spark se cargó y activó correctamente, pero el pipeline de streaming resultó **más lento en GPU que en CPU**, por dos razones independientes:
+RAPIDS Spark se cargó correctamente y la corrida final quedó estable durante
+25 min 40 s con 4 queries activas. Esto corrige la conclusión anterior: el
+resultado final ya no debe presentarse como "RAPIDS crashea en WSL2".
 
-1. **Incompatibilidad WSL2:** WSL2 GPU Paravirtualization no soporta las operaciones de memoria directa de cuDF. Resultado: `cudaErrorIllegalAddress` → SIGSEGV → crash del JVM. Resolvible con bare-metal Linux.
+La conclusión útil para el reporte es:
 
-2. **Workload inadecuado para GPU:** Micro-batches de 100–500 filas tienen overhead de transferencia CPU→VRAM mayor que la ganancia de paralelismo. RAPIDS está diseñado para millones de filas por operación.
-
----
-
-## Operadores que SÍ corrieron en GPU
-
-| Operador | Detalle |
-|---|---|
-| `HashAggregateExec` | avg, min, max, variance, count acelerados |
-| `ShuffleExchangeExec` | HashPartitioning en GPU |
-| `from_json` / `JsonToStructs` | Parsing de mensajes Kafka |
-| `ProjectExec` | Expresiones aritméticas y CaseWhen |
-| Windowing timestamp | precisetimestampconversion en GPU |
-
-## Operadores que NO pueden correr en GPU (limitación de Spark Streaming)
-
-| Operador | Razón |
-|---|---|
-| `MicroBatchScanExec` | Kafka source es I/O; GPU no aplica |
-| `StateStoreSaveExec` / `StateStoreRestoreExec` | Estado de ventanas en RocksDB (CPU) |
-| `WriteToDataSourceV2Exec` | Kafka sink es I/O |
-| `EventTimeWatermarkExec` | Watermark tracking en CPU |
-
-Estos operadores son **fundamentales** en Spark Structured Streaming y no son acelerables por RAPIDS. Forman el esqueleto del pipeline; la GPU solo puede ayudar en los nodos de cómputo intermedios.
+> RAPIDS Spark funciona en esta máquina, pero para este streaming de baja
+> latencia la CPU local es igual o mejor. El overhead de mover datos hacia GPU y
+> los operadores de Structured Streaming que quedan en CPU pesan más que la
+> aceleración de agregaciones.
 
 ---
 
 ## Comparativa CPU vs GPU
 
-| Métrica | CPU (Windows) | GPU (WSL2 RAPIDS) |
+| Métrica | CPU Windows | GPU WSL2 RAPIDS |
 |---|---:|---:|
-| Avg input forecast msg/s | 1,613 | < 500 (antes de crash) |
-| Avg process forecast msg/s | 1,636 | degradado |
-| Batch duration típico | ~0.5 s | > 2 s |
-| Estabilidad | Estable 19+ min | Crash por SIGSEGV |
-| GC time (19 min) | 21 s | N/A |
-| Shuffle read/write | 5.3 MB / 5.3 MB | N/A |
+| Duración observada | 19 min 02 s | 25 min 40 s |
+| Active streaming queries | 4 | 4 |
+| Promedio input, 4 queries | 1,496.58 msg/s | 1,465.01 msg/s |
+| Mediana process, 4 queries | 1,637.01 msg/s | 1,392.09 msg/s |
+| Query input más alto | 1,613.25 msg/s | 1,949.95 msg/s |
+| Query process más alto | 6,066.96 msg/s | 1,452.32 msg/s |
+| Estabilidad final | Estable | Estable |
+
+La GPU tuvo una query con mayor input promedio, pero en conjunto no supera la
+corrida CPU. La comparación se debe leer como evidencia de arquitectura, no
+como un benchmark perfecto de laboratorio: las queries no tienen nombre en Spark
+UI y las capturas fueron tomadas en ventanas distintas.
 
 ---
 
-## ¿Por qué GPU no ayuda en streaming de baja latencia?
+## Operadores que sí pueden correr en GPU
 
-El bottleneck real del pipeline es **I/O**, no cómputo:
+| Operador | Detalle |
+|---|---|
+| `HashAggregateExec` | avg, min, max, variance, count acelerables |
+| `ShuffleExchangeExec` | HashPartitioning acelerable |
+| `from_json` / `JsonToStructs` | Parsing JSON acelerable cuando el plan es compatible |
+| `ProjectExec` | Expresiones aritméticas y `CaseWhen` acelerables |
+| Windowing timestamp | Conversiones de timestamp compatibles con RAPIDS |
 
-- `polymarket.events`: ~980k mensajes / 626 MB
-- `binance.book`: ~506k mensajes / 204 MB
+## Operadores que no conviene vender como GPU
 
-El cómputo por mensaje (un `avg` y un `when`) es trivial. El tiempo se va en:
-1. Leer de Kafka (red)
-2. Deserializar JSON
-3. Mantener estado de ventanas deslizantes (RocksDB)
-4. Escribir a Kafka (red)
+| Operador | Razón |
+|---|---|
+| `MicroBatchScanExec` | Kafka source es I/O; GPU no aplica |
+| `StateStoreSaveExec` / `StateStoreRestoreExec` | Estado de ventanas en CPU |
+| `WriteToDataSourceV2Exec` | Kafka sink es I/O |
+| `EventTimeWatermarkExec` | Watermark tracking en CPU |
 
-Ninguno de estos pasos se beneficia de paralelismo masivo GPU.
+Estos operadores son parte central de Spark Structured Streaming. Por eso la
+GPU solo acelera islas de cómputo dentro del plan, no todo el pipeline.
 
 ---
 
-## ¿Qué sí se beneficiaría de GPU en este proyecto?
+## ¿Por qué GPU no ayuda mucho aquí?
 
-| Tarea | Herramienta | Ganancia esperada |
+El bottleneck real del pipeline es I/O y estado, no álgebra pesada:
+
+1. Leer de Kafka.
+2. Deserializar JSON.
+3. Mantener ventanas con watermark.
+4. Escribir Parquet y Kafka.
+5. Refrescar Grafana desde topics limpios.
+
+El cómputo por mensaje es pequeño. En batches de segundos, el costo fijo de
+RAPIDS y la transferencia RAM/VRAM puede comerse cualquier ganancia.
+
+---
+
+## SARIMAX y dashboard
+
+El `No data` de SARIMAX no era un problema de modelo ni de GPU. Kafka tenía
+mensajes en `btc.sarimax-forecast.clean`, pero estaban en la partición 2. El
+dashboard consulta partición 0 porque el plugin de Grafana trabaja por
+partición. La corrección es que `score_stream.py` publique siempre en
+`partition=0`.
+
+Además, el comando:
+
+```bash
+WINDOWS_HOST=$(cat /etc/resolv.conf | grep nameserver | awk '{print $2}')
+```
+
+es sintaxis de bash. Si aparece el error `The term 'WINDOWS_HOST=$(...)' is not
+recognized`, se ejecutó en PowerShell, no dentro de WSL. En esta configuración
+Kafka anuncia `localhost:9092`, así que desde WSL lo más simple es:
+
+```bash
+score-stream --kafka-bootstrap localhost:9092 --debug
+```
+
+---
+
+## Qué sí se beneficiaría de GPU
+
+| Tarea | Herramienta | Expectativa |
 |---|---|---|
-| Entrenamiento SARIMAX/ML en histórico | cuML, PyTorch | Alta — millones de filas |
-| Inferencia batch sobre parquet | cuDF + cuML | Alta |
-| Procesamiento de order book L2 completo | cuDF directo | Media-alta si batches grandes |
-| Spark streaming micro-batch actual | RAPIDS | Negativa o nula |
+| Batch histórico grande | cuDF / RAPIDS Spark | Buena |
+| Muchas series temporales en paralelo | cuML / PyTorch | Buena |
+| Procesamiento L2 profundo por lotes | cuDF directo | Media-alta |
+| Streaming actual de 1 segundo | RAPIDS Spark | Nula o negativa |
 
-Ver `scripts/benchmark_inference.py --gpu` para evidencia de ganancia GPU en inferencia ML.
-
----
-
-## Conclusión para el reporte
-
-> RAPIDS Accelerator for Apache Spark está diseñado para **cargas de trabajo batch con millones de filas**. En un pipeline de streaming con micro-batches de 1 segundo y volúmenes de 100–500 filas, el overhead de transferencia CPU↔GPU domina sobre la aceleración. Adicionalmente, los operadores críticos de Spark Structured Streaming (`StateStore`, `MicroBatchScan`) no son acelerables por GPU. El resultado es: **CPU supera a GPU para este caso de uso específico**, lo cual es un hallazgo válido y documentado en la literatura de sistemas de streaming.
+Conclusión para el informe: **CPU gana para el dashboard live; GPU queda como
+evidencia técnica válida de aceleración parcial y como camino para batch/ML
+histórico.**

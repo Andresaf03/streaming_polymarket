@@ -74,8 +74,20 @@ class KafkaSink:
         while self._pending:
             await self._drain_one()
 
-    async def send(self, topic: str, value: dict, *, key: str | None = None) -> None:
-        future = await self._producer.send(topic, value=value, key=key)
+    async def send(
+        self,
+        topic: str,
+        value: dict,
+        *,
+        key: str | None = None,
+        partition: int | None = None,
+    ) -> None:
+        future = await self._producer.send(
+            topic,
+            value=value,
+            key=key,
+            partition=partition,
+        )
         self._pending.add(future)
         self._since_drain += 1
         if self._since_drain >= self._drain_every:
@@ -85,9 +97,19 @@ class KafkaSink:
             await self._drain_one()
 
     async def send_and_wait(
-        self, topic: str, value: dict, *, key: str | None = None
+        self,
+        topic: str,
+        value: dict,
+        *,
+        key: str | None = None,
+        partition: int | None = None,
     ) -> None:
-        await self._producer.send_and_wait(topic, value=value, key=key)
+        await self._producer.send_and_wait(
+            topic,
+            value=value,
+            key=key,
+            partition=partition,
+        )
 
 
 class NullSink:
@@ -95,5 +117,22 @@ class NullSink:
 
     bootstrap = "dry-run"
 
-    async def send(self, topic: str, value: dict, *, key: str | None = None) -> None:
+    async def send(
+        self,
+        topic: str,
+        value: dict,
+        *,
+        key: str | None = None,
+        partition: int | None = None,
+    ) -> None:
+        pass
+
+    async def send_and_wait(
+        self,
+        topic: str,
+        value: dict,
+        *,
+        key: str | None = None,
+        partition: int | None = None,
+    ) -> None:
         pass

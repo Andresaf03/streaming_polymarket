@@ -1,0 +1,19 @@
+category,finding,detail,severity
+compatibility,RAPIDS Spark se carga correctamente,Plugin com.nvidia.spark.SQLPlugin activo en Spark 3.5.8 con RAPIDS 26.04.0 y RTX 2060,positive
+compatibility,WSL2 GPU-PV queda como riesgo no como resultado final,Hubo fallos previos tipo cudaErrorIllegalAddress/SIGSEGV pero la corrida final posterior al reset se mantuvo 25m40s,warning
+performance,GPU no supera CPU para estos micro-batches,CPU promedio input 1496.58 msg/s vs GPU 1465.01 msg/s; CPU mediana process 1637.01 msg/s vs GPU 1392.09 msg/s,critical_finding
+performance,Overhead de transferencia domina,Para batches pequenos el costo RAM->VRAM y el overhead de RAPIDS superan la ganancia de paralelismo,critical_finding
+operators_on_gpu,HashAggregateExec corre en GPU,avg/min/max/variance/count pueden acelerarse cuando RAPIDS soporta el plan,positive
+operators_on_gpu,ShuffleExchangeExec corre en GPU,HashPartitioning puede acelerarse en GPU,positive
+operators_on_gpu,from_json puede correr en GPU,Parsing JSON de Kafka aparece como operador acelerable en rapids-explain,positive
+operators_on_gpu,ProjectExec y expresiones aritmeticas corren en GPU,CaseWhen y expresiones de forecast son acelerables si no hay fallback alrededor,positive
+operators_not_on_gpu,MicroBatchScanExec no puede en GPU,Kafka source es I/O bound; GPU no ayuda ahi,expected
+operators_not_on_gpu,StateStoreSaveExec / StateStoreRestoreExec no en GPU,El estado de ventanas de Structured Streaming queda en CPU,expected
+operators_not_on_gpu,WriteToDataSourceV2Exec no en GPU,Kafka sink es I/O; no aplica GPU,expected
+operators_not_on_gpu,EventTimeWatermarkExec no en GPU,Watermark tracking queda en CPU,expected
+architecture,Bottleneck real es I/O y estado no computo,El pipeline lee Kafka, deserializa JSON, mantiene ventanas y escribe Kafka; la aritmetica por mensaje es pequena,critical_finding
+architecture,RAPIDS es mas util para batch grande,RAPIDS brilla con millones de filas por operacion; el streaming de 1 segundo tiene demasiado overhead fijo,critical_finding
+dashboard,SARIMAX no llegaba a Grafana por particion,btc.sarimax-forecast.clean tenia mensajes en particion 2 mientras el dashboard leia particion 0; score_stream ahora fuerza partition=0,fixed
+wsl_command,WINDOWS_HOST assignment se ejecuto en PowerShell,WINDOWS_HOST=$(...) es sintaxis de bash; en WSL usa score-stream --kafka-bootstrap localhost:9092 --debug,operator_error
+alternative,GPU util para historico parquet o muchas series,cuDF/cuML tendrian sentido en batch grande o miles de series en paralelo,positive
+alternative,Arquitectura GPU-nativa seria distinta,CUDA/cuDF directo sin Spark podria reducir overhead pero queda fuera del alcance,out_of_scope

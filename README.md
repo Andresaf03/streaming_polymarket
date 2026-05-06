@@ -95,7 +95,8 @@ Pipeline de ingestión y análisis en tiempo real sobre los mercados de predicci
 │   ├── model.sarimax.pkl        #   SARIMAXResults entrenado
 │   └── feature_list.json        #   Orden (2,0,2) · exog · σ_log · AIC grid
 ├── docs/
-│   └── phase-5-report.md        #   Métricas de holdout + decisiones de diseño
+│   ├── phase-5-report.md        #   Métricas de holdout + decisiones de diseño
+│   └── phase-6-report.md        #   Comparación Spark CPU vs GPU RAPIDS
 ├── ws_live.py                   #   Explorador interactivo del CLOB (sin Kafka)
 ├── bitcoin_5m.py                #   Feed interactivo de mercados Up-or-Down
 └── pyproject.toml
@@ -170,10 +171,10 @@ Ambos producers tienen reconexión automática con backoff exponencial (1 s → 
 spark-stream                                   # solo Parquet + Kafka sinks
 spark-stream --console                         # también imprime stats en consola
 spark-stream --window "2 minutes" --watermark "1 minute"
-spark-stream --forecast-topic btc.forecast.live # topic limpio para Grafana
+spark-stream --forecast-topic btc.forecast.clean # topic limpio para Grafana
 
 # Terminal D (requiere data/model.sarimax.pkl — ejecutar train-model primero)
-score-stream                                   # SARIMAX live → btc.sarimax-forecast.live
+score-stream                                   # SARIMAX live → btc.sarimax-forecast.clean
 score-stream --debug                           # verbose: muestra cada bar cerrado
 score-stream --strict-history --debug          # espera 10 min de features exactas
 ```
@@ -181,7 +182,7 @@ score-stream --strict-history --debug          # espera 10 min de features exact
 Spark escribe tres sinks en paralelo:
 - **Parquet** en `data/ticks/` (particionado por `source/date/hour`)
 - **Kafka** topic `stats.windowed` (estadísticas por ventana — consumido por Grafana)
-- **Kafka** topic `btc.forecast.live` (BTC mid + Polymarket-implied price por segundo — consumido por Grafana; evita mezclar datos viejos de `btc.forecast`)
+- **Kafka** topic `btc.forecast.clean` (BTC mid + Polymarket-implied price por segundo — consumido por Grafana; evita mezclar datos viejos de `btc.forecast`)
 
 ### 4 — Recolección overnight (desatendida)
 
@@ -298,9 +299,9 @@ Consume los 3 topics de ingestión y reporta msg/s por topic, distribución de t
 | `binance.book` | 3 | bookTicker (best bid/ask) + depth20 snapshots |
 | `stats.windowed` | 3 | Estadísticas por ventana: min/max/avg/var/n |
 | `btc.forecast` | 1 | Topic legado de forecast BTC; útil para compatibilidad, no para el dashboard limpio |
-| `btc.forecast.live` | 1 | BTC mid + Polymarket-implied forecast (1/s, emitido por Spark, consumido por Grafana) |
+| `btc.forecast.clean` | 1 | BTC mid + Polymarket-implied forecast (1/s, emitido por Spark, consumido por Grafana) |
 | `btc.sarimax-forecast` | 1 | Topic legado SARIMAX; útil para compatibilidad, no para el dashboard limpio |
-| `btc.sarimax-forecast.live` | 1 | SARIMAX(2,0,2) live predicted price (1/s, emitido por score_stream.py, consumido por Grafana) |
+| `btc.sarimax-forecast.clean` | 1 | SARIMAX(2,0,2) live predicted price (1/s, emitido por score_stream.py en partición 0, consumido por Grafana) |
 
 Todos los mensajes siguen el envelope canónico definido en `common/envelope.py`:
 
@@ -350,8 +351,8 @@ Activos disponibles: `btc`, `eth`, `sol`, `xrp`, `bnb`, `doge`, `hype`.
 - **Walk-forward con append(refit=False):** refitear SARIMAX en cada paso del holdout toma 20+ min. `append(refit=False)` actualiza el estado del filtro de Kalman sin reoptimizar parámetros — estándar en producción, ~30 s total.
 - **Índice entero en SARIMAX:** `append()` requiere índice temporalmente contiguo; los snapshots tienen gaps por `dropna`. Se resetea a índice entero antes de pasar a statsmodels.
 - **σ_log en feature_list.json:** `score_stream.py` lo usa para reportar el log-return en bps junto al forecast de precio.
-- **btc.forecast.live:** topic de 1 partición para el dashboard. Ejecuta solo un `spark-stream` escribiendo aqui; si ves puntos duplicados, hay otro Spark vivo o estas leyendo un topic viejo.
-- **btc.sarimax-forecast.live:** topic nuevo de 1 partición emitido por `score_stream.py`. Schema: `{ts, ts_unix, target_ts, target_horizon_s, model, feature_mode, sarimax_input_btc_mid, sarimax_poly_prob, log_return_pred, sarimax_forecast, sarimax_drift, sarimax_prob_up, sigma_log}`. Emite cada 1 s con `feature_mode=warm`; pasa a `exact` cuando acumula historia completa.
+- **btc.forecast.clean:** topic de dashboard para BTC + Polymarket-implied. Ejecuta solo un `spark-stream` escribiendo aquí; si ves puntos duplicados, hay otro Spark vivo o estás leyendo un topic viejo.
+- **btc.sarimax-forecast.clean:** topic emitido por `score_stream.py`. Schema: `{ts, ts_unix, target_ts, target_horizon_s, model, feature_mode, sarimax_input_btc_mid, sarimax_poly_prob, log_return_pred, sarimax_forecast, sarimax_drift, sarimax_prob_up, sigma_log}`. Emite cada 1 s con `feature_mode=warm`; pasa a `exact` cuando acumula historia completa. El scorer fuerza `partition=0` porque el datasource Kafka de Grafana consulta una partición concreta.
 - **train_model.py usa `final_fit.save()`:** formato statsmodels nativo. Compatible con archivos generados por versiones anteriores del script — `sm.load()` y `pickle.load()` leen el mismo formato.
 
 ---
@@ -388,6 +389,18 @@ python modeling/train_model_cuml.py
 ```
 
 Guía paso a paso: `docs/windows-rtx2060-phase6-runbook.md`.
+
+Resultados finales de Fase 6: la corrida GPU con RAPIDS quedó estable durante
+25 min 40 s, pero no superó a CPU para este workload de micro-batches. En las
+capturas de Spark UI, CPU promedió 1,496.58 msg/s de input entre las 4 queries
+activas y GPU 1,465.01 msg/s; la mediana de processing rate fue 1,637.01 msg/s
+en CPU vs 1,392.09 msg/s en GPU. Ver `results/phase6_cpu_vs_gpu.csv`,
+`results/hardware_comparison.md` y `results/rapids_findings.md`.
+
+Si el panel SARIMAX muestra `No data`, revisa primero el topic limpio:
+Grafana lee `btc.sarimax-forecast.clean` en la partición 0. `score_stream.py`
+ya fuerza esa partición; si hay mensajes viejos en otra partición, reinicia el
+scorer para producir puntos nuevos en partición 0.
 
 Para medir throughput sin mezclar mercados ajenos al caso crypto Up-or-Down:
 

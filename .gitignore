@@ -71,3 +71,7 @@ models/
 !data/training.parquet
 !data/model.sarimax.pkl
 !data/feature_list.json
+
+# Tracked Phase 6 result tables.
+!results/phase6_cpu_vs_gpu.csv
+!results/rapids_findings.csv

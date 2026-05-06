@@ -391,6 +391,7 @@ async def score_loop(
                     "sigma_log": sigma_log,
                 },
                 key="btc",
+                partition=0,
             )
             last_emit_ts = forecast_ts
             forecast_count += 1
