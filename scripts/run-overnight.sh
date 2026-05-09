@@ -24,6 +24,22 @@ until docker exec kafka /opt/kafka/bin/kafka-topics.sh \
   sleep 2
 done
 
+echo "→ archiving any stale Spark sink metadata"
+# data/ticks/_spark_metadata records committed Parquet batches across runs.
+# If a previous run left it behind with batch numbers that don't match the
+# current checkpoint state, Spark will commit empty `nextBatchWatermarkMs:0`
+# offsets and write zero new files all night. Move it aside (preserving the
+# old metadata for forensics) and start the new run with a clean slate.
+if [ -d "${ROOT}/data/ticks/_spark_metadata" ]; then
+  STAMP=$(date +%Y%m%d_%H%M%S)
+  mv "${ROOT}/data/ticks/_spark_metadata" \
+     "${ROOT}/data/ticks/_spark_metadata.archive_${STAMP}"
+  echo "  → archived to _spark_metadata.archive_${STAMP}"
+fi
+# Spark checkpoint dir holds offsets/commits for streaming queries; we wipe
+# it so the run starts fresh from the current Kafka tip.
+rm -rf "${ROOT}/data/checkpoints/spark"
+
 echo "→ launching producers + spark + scorer"
 nohup "${VENV}/binance-producer" \
   > "${LOGDIR}/binance.log" 2>&1 &
@@ -43,9 +59,18 @@ if [ -f "${ROOT}/data/model.sarimax.pkl" ]; then
   nohup "${VENV}/score-stream" \
     > "${LOGDIR}/scorer.log" 2>&1 &
   echo "scorer=$!" >> "${PIDFILE}"
-  echo "  → score-stream started (model found)"
+  echo "  → score-stream started (sarimax model found)"
 else
   echo "  → score-stream skipped (no model.sarimax.pkl — run train-model first)"
+fi
+
+if [ -f "${ROOT}/data/model.lstm.pt" ]; then
+  nohup "${VENV}/score-lstm" \
+    > "${LOGDIR}/scorer_lstm.log" 2>&1 &
+  echo "scorer_lstm=$!" >> "${PIDFILE}"
+  echo "  → score-lstm started (lstm model found)"
+else
+  echo "  → score-lstm skipped (no model.lstm.pt — run train-lstm first)"
 fi
 
 echo "→ caffeinate (keep laptop awake)"
@@ -54,7 +79,7 @@ echo "caffeinate=$!" >> "${PIDFILE}"
 
 echo
 echo "Stack is running. Logs:"
-echo "  tail -f ${LOGDIR}/{binance,polymarket,spark,scorer}.log"
+echo "  tail -f ${LOGDIR}/{binance,polymarket,spark,scorer,scorer_lstm}.log"
 echo "Stop with:"
 echo "  ${ROOT}/scripts/stop-overnight.sh"
 echo
