@@ -41,7 +41,7 @@ from producers.polymarket_discovery import (
 
 CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 TOPIC = "polymarket.events"
-UPDOWN_ASSETS = ["btc", "eth", "sol", "xrp", "bnb", "doge", "hype"]
+UPDOWN_ASSETS = ["btc", "eth", "sol", "xrp", "bnb", "doge"]
 WS_CONNECT_KWARGS: dict = {
     "ping_interval": 10,
     "ping_timeout": 15,

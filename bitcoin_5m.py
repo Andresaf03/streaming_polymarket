@@ -232,7 +232,7 @@ def main():
     parser.add_argument(
         "--asset",
         default="btc",
-        choices=["btc", "eth", "sol", "xrp", "bnb", "doge", "hype"],
+        choices=["btc", "eth", "sol", "xrp", "bnb", "doge"],
         help="Asset to watch (default: btc)",
     )
     parser.add_argument(

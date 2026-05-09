@@ -45,7 +45,7 @@ services:
           /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
             --create --if-not-exists --topic "$$t" --partitions 3 --replication-factor 1
         done
-        for t in btc.forecast btc.forecast.live btc.forecast.clean btc.sarimax-forecast btc.sarimax-forecast.live btc.sarimax-forecast.clean; do
+        for t in btc.forecast btc.forecast.live btc.forecast.clean btc.sarimax-forecast btc.sarimax-forecast.live btc.sarimax-forecast.clean lstm.forecast lstm.forecast.live lstm.forecast.clean; do
           /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
             --create --if-not-exists --topic "$$t" --partitions 1 --replication-factor 1
         done

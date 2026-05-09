@@ -29,7 +29,7 @@ nohup "${VENV}/binance-producer" \
   > "${LOGDIR}/binance.log" 2>&1 &
 echo "binance=$!" >> "${PIDFILE}"
 
-nohup "${VENV}/polymarket-producer" --asset btc --window 5 \
+nohup "${VENV}/polymarket-producer" --assets btc eth sol xrp bnb doge --window 5 \
   > "${LOGDIR}/polymarket.log" 2>&1 &
 echo "polymarket=$!" >> "${PIDFILE}"
 

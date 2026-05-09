@@ -336,7 +336,7 @@ TS=$(python3 -c "import time; w=300; print((int(time.time())//w)*w)")
 curl -s "https://gamma-api.polymarket.com/markets?slug=btc-updown-5m-$TS"
 ```
 
-Activos disponibles: `btc`, `eth`, `sol`, `xrp`, `bnb`, `doge`, `hype`.
+Activos disponibles: `btc`, `eth`, `sol`, `xrp`, `bnb`, `doge`. (HYPE no está listado como par spot en Binance, así que lo dejamos fuera del modelo joint para mantener simetría entre fuentes.)
 
 ---
 
