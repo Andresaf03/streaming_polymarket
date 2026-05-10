@@ -159,7 +159,7 @@ fi
 # ----- 5. run the benchmark
 echo "→ running benchmark on cpu + cuda (if available)"
 echo
-"$PY" "${ROOT}/scripts/benchmark_inference_lstm.py" \
+PYTHONPATH="${ROOT}" "$PY" "${ROOT}/scripts/benchmark_inference_lstm.py" \
   --csv-out "$CSV_OUT" \
   2>&1 | tee "$LOG_OUT"
 
