@@ -75,3 +75,11 @@ models/
 # Tracked Phase 6 result tables.
 !results/phase6_cpu_vs_gpu.csv
 !results/rapids_findings.csv
+
+# Tracked Phase 7 inference bundle: model + meta + per-asset holdout parquet,
+# so anyone with CUDA can run scripts/run-inference-benchmark.sh in one shot.
+# Re-ignore the rest of data/handoff/ so future smoke-test tarballs/snapshots
+# don't accidentally end up in commits.
+!data/handoff/
+data/handoff/*
+!data/handoff/lstm_inference_bundle.tar.gz

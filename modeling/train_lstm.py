@@ -256,7 +256,24 @@ def main() -> None:
         choices=["auto", "cuda", "mps", "cpu"],
         help="Auto: cuda → cpu (MPS skipped due to LSTM NaN issues; force with --device mps to test)",
     )
-    args = parser.parse_args()
+    # parse_known_args() — Jupyter / Colab inject a `-f kernel-XXXX.json`
+    # pair when main() is imported and called directly inside a notebook
+    # cell. We accept unknowns so the same script works there, but still
+    # warn on anything else so real CLI typos (e.g. `--epoch` instead of
+    # `--epochs`) get surfaced rather than silently dropped.
+    args, unknown = parser.parse_known_args()
+    leftover: list[str] = []
+    skip_next = False
+    for tok in unknown:
+        if skip_next:
+            skip_next = False
+            continue
+        if tok == "-f":
+            skip_next = True  # drop the kernel-*.json path that follows
+            continue
+        leftover.append(tok)
+    if leftover:
+        print(f"warning: ignoring unrecognized args: {leftover}")
 
     device = pick_device(args.device)
     print(f"device: {device}")
