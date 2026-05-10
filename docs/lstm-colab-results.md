@@ -173,7 +173,7 @@ Same hardware, two sides of the same threshold.
 | Path | What it is |
 |---|---|
 | `data/handoff/lstm_inference_bundle.tar.gz` | model + meta + per-asset holdout parquet, ~1.7 MB. Tracked in git so the inference benchmark is reproducible without rerunning training. |
-| `scripts/run-inference-benchmark.sh` | one-command wrapper: extracts bundle, runs benchmark on cpu + cuda, saves CSV + log under `results/`. |
+| `scripts/run-inference-benchmark.sh` | one-command wrapper: extracts bundle, runs benchmark on cpu + cuda, saves CSV + log under `results/`. Auto-builds a sidecar `.venv-bench/` with the cu121 PyTorch wheel on the first run if `nvidia-smi` is present but the existing venv only has CPU torch (Andres's RTX 2060 / WSL2 path). On a pure-CPU host it just uses the project venv. Use `--no-install` to skip the auto-bootstrap, `--force` to re-extract the bundle. |
 | `scripts/benchmark_inference_lstm.py` | underlying Python benchmark, used by the wrapper but also runnable standalone. |
 | `data/lstm_train_cpu_overnight.log` | Mac CPU training log (608 s wall, 15 epochs). |
 | `data/lstm_inference_mac_cpu.csv` | Mac CPU inference benchmark, 5 batch sizes. |

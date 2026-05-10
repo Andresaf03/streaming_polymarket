@@ -12,6 +12,7 @@ build/
 
 # Virtual envs
 .venv/
+.venv-bench/
 venv/
 env/
 ENV/
