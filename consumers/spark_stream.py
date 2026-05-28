@@ -84,6 +84,7 @@ from pyspark.sql.types import (
     StructField,
     StructType,
 )
+from pyspark.sql.streaming import StreamingQueryListener
 
 KAFKA_TOPICS = ["polymarket.events", "binance.trades", "binance.book"]
 STATS_TOPIC = "stats.windowed"
@@ -131,6 +132,28 @@ ENVELOPE_SCHEMA = StructType([
     StructField("market", MARKET_SCHEMA),
     StructField("payload", PAYLOAD_SCHEMA),
 ])
+
+
+class MetricsFileListener(StreamingQueryListener):
+    """Appends each batch's StreamingQueryProgress as a JSON line to a file."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        self._path = Path(path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+
+    def onQueryStarted(self, event: StreamingQueryListener.QueryStartedEvent) -> None:
+        pass
+
+    def onQueryProgress(self, event: StreamingQueryListener.QueryProgressEvent) -> None:
+        with self._path.open("a") as fh:
+            fh.write(event.progress.json + "\n")
+
+    def onQueryIdle(self, event: StreamingQueryListener.QueryIdleEvent) -> None:
+        pass
+
+    def onQueryTerminated(self, event: StreamingQueryListener.QueryTerminatedEvent) -> None:
+        pass
 
 
 def build_session(
@@ -603,6 +626,8 @@ def run(args: argparse.Namespace) -> None:
         rapids_explain=args.rapids_explain,
     )
     spark.sparkContext.setLogLevel("WARN")
+    if args.metrics_file:
+        spark.streams.addListener(MetricsFileListener(args.metrics_file))
     sigma_log = args.sigma_log
     if sigma_log is None:
         sigma_log = load_sigma_log(args.features_path)
@@ -714,6 +739,11 @@ def main() -> None:
         help="RAPIDS explain logging level for GPU/fallback plan diagnostics",
     )
     parser.add_argument("--console", action="store_true", help="Also print stats to console")
+    parser.add_argument(
+        "--metrics-file",
+        default=None,
+        help="Path to append streaming query progress as JSONL (one JSON per batch per query)",
+    )
     args = parser.parse_args()
     run(args)
 

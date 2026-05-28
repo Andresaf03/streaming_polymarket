@@ -27,7 +27,7 @@ from rich.console import Console
 from common import KafkaSink, NullSink, RateTracker, envelope, log_progress, ssl_context
 
 BINANCE_WS = "wss://stream.binance.com:9443/stream"
-DEFAULT_SYMBOLS = ["btcusdt", "ethusdt", "solusdt"]
+DEFAULT_SYMBOLS = ["btcusdt", "ethusdt", "solusdt", "xrpusdt", "bnbusdt", "dogeusdt"]
 DEFAULT_STREAMS = ["aggTrade", "bookTicker", "depth20@100ms"]
 TRADE_TOPIC = "binance.trades"
 BOOK_TOPIC = "binance.book"

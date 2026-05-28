@@ -1,0 +1,339 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "$asset · spot mid",
+      "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "gray", "value": null}]},
+          "unit": "currencyUSD",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": "/^mid$/"},
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {"refId": "A", "topicName": "lstm.forecast.clean", "partition": 0, "autoOffsetReset": "LATEST", "timestampMode": "Now"}
+      ],
+      "transformations": [
+        {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
+        {"id": "convertFieldType", "options": {"conversions": [
+          {"targetField": "ts", "destinationType": "time"},
+          {"targetField": "mid", "destinationType": "number"},
+          {"targetField": "pred_price", "destinationType": "number"},
+          {"targetField": "pred_log_return", "destinationType": "number"},
+          {"targetField": "poly_p_up", "destinationType": "number"}
+        ]}},
+        {"id": "filterByValue", "options": {"type": "include", "match": "any", "filters": [
+          {"fieldName": "asset", "config": {"id": "equal", "options": {"value": "$asset"}}}
+        ]}},
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "mid"]}}}
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "$asset · LSTM target",
+      "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "fixed", "fixedColor": "blue"},
+          "unit": "currencyUSD",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": "/^pred_price$/"},
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {"refId": "A", "topicName": "lstm.forecast.clean", "partition": 0, "autoOffsetReset": "LATEST", "timestampMode": "Now"}
+      ],
+      "transformations": [
+        {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
+        {"id": "convertFieldType", "options": {"conversions": [
+          {"targetField": "ts", "destinationType": "time"},
+          {"targetField": "mid", "destinationType": "number"},
+          {"targetField": "pred_price", "destinationType": "number"},
+          {"targetField": "pred_log_return", "destinationType": "number"},
+          {"targetField": "poly_p_up", "destinationType": "number"}
+        ]}},
+        {"id": "filterByValue", "options": {"type": "include", "match": "any", "filters": [
+          {"fieldName": "asset", "config": {"id": "equal", "options": {"value": "$asset"}}}
+        ]}},
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "pred_price"]}}}
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "$asset · Poly P(up)",
+      "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "orange", "value": 0.4},
+              {"color": "gray", "value": 0.5},
+              {"color": "blue", "value": 0.6},
+              {"color": "green", "value": 0.7}
+            ]
+          },
+          "unit": "percentunit",
+          "decimals": 3,
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": "/^poly_p_up$/"},
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {"refId": "A", "topicName": "lstm.forecast.clean", "partition": 0, "autoOffsetReset": "LATEST", "timestampMode": "Now"}
+      ],
+      "transformations": [
+        {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
+        {"id": "convertFieldType", "options": {"conversions": [
+          {"targetField": "ts", "destinationType": "time"},
+          {"targetField": "mid", "destinationType": "number"},
+          {"targetField": "pred_price", "destinationType": "number"},
+          {"targetField": "pred_log_return", "destinationType": "number"},
+          {"targetField": "poly_p_up", "destinationType": "number"}
+        ]}},
+        {"id": "filterByValue", "options": {"type": "include", "match": "any", "filters": [
+          {"fieldName": "asset", "config": {"id": "equal", "options": {"value": "$asset"}}}
+        ]}},
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "poly_p_up"]}}}
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "$asset · pred log return (bps)",
+      "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "gray", "value": -0.0001},
+              {"color": "green", "value": 0.0001}
+            ]
+          },
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": "/^pred_log_return$/"},
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {"refId": "A", "topicName": "lstm.forecast.clean", "partition": 0, "autoOffsetReset": "LATEST", "timestampMode": "Now"}
+      ],
+      "transformations": [
+        {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
+        {"id": "convertFieldType", "options": {"conversions": [
+          {"targetField": "ts", "destinationType": "time"},
+          {"targetField": "mid", "destinationType": "number"},
+          {"targetField": "pred_price", "destinationType": "number"},
+          {"targetField": "pred_log_return", "destinationType": "number"},
+          {"targetField": "poly_p_up", "destinationType": "number"}
+        ]}},
+        {"id": "filterByValue", "options": {"type": "include", "match": "any", "filters": [
+          {"fieldName": "asset", "config": {"id": "equal", "options": {"value": "$asset"}}}
+        ]}},
+        {"id": "calculateField", "options": {"mode": "binary", "binary": {
+          "left": "pred_log_return", "operator": "*", "right": "10000"
+        }, "alias": "pred_bps", "replaceFields": false}},
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "pred_bps"]}}}
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "$asset · spot mid (solid) · LSTM pred price (dotted)",
+      "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
+      "gridPos": {"x": 0, "y": 4, "w": 24, "h": 12},
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "currencyUSD",
+          "decimals": 2
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "pred_price"},
+            "properties": [
+              {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [6, 6]}},
+              {"id": "color", "value": {"mode": "fixed", "fixedColor": "semi-dark-blue"}},
+              {"id": "displayName", "value": "LSTM pred price"}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "mid"},
+            "properties": [
+              {"id": "color", "value": {"mode": "fixed", "fixedColor": "white"}},
+              {"id": "displayName", "value": "Spot mid"}
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {"refId": "A", "topicName": "lstm.forecast.clean", "partition": 0, "autoOffsetReset": "LATEST", "timestampMode": "Now"}
+      ],
+      "transformations": [
+        {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
+        {"id": "convertFieldType", "options": {"conversions": [
+          {"targetField": "ts", "destinationType": "time"},
+          {"targetField": "mid", "destinationType": "number"},
+          {"targetField": "pred_price", "destinationType": "number"},
+          {"targetField": "pred_log_return", "destinationType": "number"},
+          {"targetField": "poly_p_up", "destinationType": "number"}
+        ]}},
+        {"id": "filterByValue", "options": {"type": "include", "match": "any", "filters": [
+          {"fieldName": "asset", "config": {"id": "equal", "options": {"value": "$asset"}}}
+        ]}},
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "mid", "pred_price"]}}}
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "$asset · Polymarket P(up)",
+      "datasource": {"type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-local"},
+      "gridPos": {"x": 0, "y": 16, "w": 24, "h": 10},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "fixed", "fixedColor": "orange"},
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "spanNulls": false,
+            "showPoints": "never",
+            "thresholdsStyle": {"mode": "line"}
+          },
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "transparent", "value": null}, {"color": "gray", "value": 0.5}]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "poly_p_up"},
+            "properties": [{"id": "displayName", "value": "P(up)"}]
+          }
+        ]
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": false},
+        "tooltip": {"mode": "single", "sort": "none"}
+      },
+      "targets": [
+        {"refId": "A", "topicName": "lstm.forecast.clean", "partition": 0, "autoOffsetReset": "LATEST", "timestampMode": "Now"}
+      ],
+      "transformations": [
+        {"id": "extractFields", "options": {"source": "value", "format": "json", "replace": true}},
+        {"id": "convertFieldType", "options": {"conversions": [
+          {"targetField": "ts", "destinationType": "time"},
+          {"targetField": "mid", "destinationType": "number"},
+          {"targetField": "pred_price", "destinationType": "number"},
+          {"targetField": "pred_log_return", "destinationType": "number"},
+          {"targetField": "poly_p_up", "destinationType": "number"}
+        ]}},
+        {"id": "filterByValue", "options": {"type": "include", "match": "any", "filters": [
+          {"fieldName": "asset", "config": {"id": "equal", "options": {"value": "$asset"}}}
+        ]}},
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["ts", "poly_p_up"]}}}
+      ]
+    }
+  ],
+  "refresh": "1s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["lstm", "multi-asset", "live"],
+  "templating": {
+    "list": [
+      {
+        "name": "asset",
+        "label": "Coin",
+        "type": "custom",
+        "query": "BTC,ETH,SOL,XRP,BNB,DOGE",
+        "current": {"text": "BTC", "value": "BTC", "selected": true},
+        "options": [
+          {"text": "BTC", "value": "BTC", "selected": true},
+          {"text": "ETH", "value": "ETH", "selected": false},
+          {"text": "SOL", "value": "SOL", "selected": false},
+          {"text": "XRP", "value": "XRP", "selected": false},
+          {"text": "BNB", "value": "BNB", "selected": false},
+          {"text": "DOGE", "value": "DOGE", "selected": false}
+        ],
+        "multi": false,
+        "includeAll": false
+      }
+    ]
+  },
+  "time": {"from": "now-30m", "to": "now"},
+  "timepicker": {"refresh_intervals": ["1s", "5s", "10s", "30s", "1m"]},
+  "timezone": "utc",
+  "title": "LSTM multi-asset live",
+  "uid": "lstm-multi-asset",
+  "version": 1,
+  "weekStart": ""
+}

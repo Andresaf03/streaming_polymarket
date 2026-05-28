@@ -164,8 +164,8 @@ Interpretacion:
 Si los 5 activos correctos no alcanzan 4000/s, documenta ese valor como caso analitico real y ejecuta un stress test separado:
 
 ```powershell
-binance-producer --symbols btcusdt ethusdt solusdt xrpusdt bnbusdt dogeusdt hypeusdt --streams aggTrade bookTicker depth20@100ms
-polymarket-producer --assets btc eth sol xrp bnb doge hype --window 5
+binance-producer --symbols btcusdt ethusdt solusdt xrpusdt bnbusdt dogeusdt --streams aggTrade bookTicker depth20@100ms
+polymarket-producer --assets btc eth sol xrp bnb doge --window 5
 throughput-probe --duration 60
 ```
 
