@@ -88,8 +88,13 @@ class AssetBuffer:
     capacity_seconds: int
 
     def __post_init__(self) -> None:
-        self.mids: deque = deque(maxlen=self.capacity_seconds * 5)
-        self.polys: deque = deque(maxlen=self.capacity_seconds * 5)
+        # maxlen needs to span `capacity_seconds` of history even for
+        # high-rate assets. Binance bookTicker for BTC fires up to ~200/s,
+        # so capacity_seconds*5 was way too small (only ~3s of BTC history
+        # in a 125s window), causing vol_60s to be NaN and the asset to be
+        # rejected. Bumped to ×300 to comfortably handle 200/s rates.
+        self.mids: deque = deque(maxlen=self.capacity_seconds * 300)
+        self.polys: deque = deque(maxlen=self.capacity_seconds * 300)
 
     def add_mid(self, ts: float, mid: float) -> None:
         self.mids.append((ts, mid))
@@ -203,7 +208,13 @@ async def ingest_loop(consumer: AIOKafkaConsumer, buffers: dict[str, AssetBuffer
             market = env.get("market") or {}
             slug = market.get("slug", "") or ""
             outcome = market.get("outcome", "")
-            if outcome not in ("Up", "Yes"):
+            # Accept both outcomes: P(up) = price for Up/Yes, P(up) = 1-price for Down/No.
+            # Necessary because during quiet windows Polymarket may emit only one side.
+            if outcome in ("Up", "Yes"):
+                invert = False
+            elif outcome in ("Down", "No"):
+                invert = True
+            else:
                 continue
             asset = detect_asset_from_slug(slug)
             if asset is None or asset not in buffers:
@@ -218,7 +229,10 @@ async def ingest_loop(consumer: AIOKafkaConsumer, buffers: dict[str, AssetBuffer
             if price is None:
                 continue
             try:
-                buffers[asset].add_poly(ts, float(price))
+                p = float(price)
+                if invert:
+                    p = 1.0 - p
+                buffers[asset].add_poly(ts, p)
             except (TypeError, ValueError):
                 continue
 
@@ -270,8 +284,17 @@ async def tick_loop(
             if mid is None:
                 continue
             pred_price = float(mid * np.exp(float(pred_log_return)))
+            # ts as both ISO string (for Grafana / human reading) and Unix seconds
+            # (for downstream consumers that prefer numeric). Older code published
+            # only the float; Grafana interpreted it as ms and rendered 1970.
+            iso_ts = (
+                pd.Timestamp(now, unit="s", tz="UTC")
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
             msg = {
-                "ts": now,
+                "ts": iso_ts,
+                "ts_unix": now,
                 "asset": asset.upper(),
                 "mid": float(mid),
                 "pred_log_return": float(pred_log_return),
