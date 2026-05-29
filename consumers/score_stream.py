@@ -30,7 +30,9 @@ import os
 import time
 import warnings
 from collections import deque
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+
+UTC = timezone.utc  # datetime.UTC alias only exists in Python 3.11+; use timezone.utc on 3.10
 from pathlib import Path
 from typing import NamedTuple
 
